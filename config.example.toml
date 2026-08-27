@@ -11,3 +11,9 @@ enabled = true
 
 [plugins.disk]
 enabled = true
+
+[plugins.kimi]
+enabled = true
+# api_key = "sk-kimi-..."   # optional: else KIMI_CODE_API_KEY, KIMI_API_KEY, or a Kimi Code CLI login
+
+# renderer plugins (always available, not toggleable): agents-usage-ui

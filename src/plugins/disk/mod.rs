@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use image::RgbaImage;
 
-use crate::plugin::Plugin;
+use crate::plugin::{Plugin, PluginKind, UiPlugin};
 
 pub struct DiskInfo {
     pub total_bytes: u64,
@@ -65,6 +65,12 @@ impl Plugin for Disk {
         "disk"
     }
 
+    fn get_plugin_kind(&self) -> PluginKind {
+        PluginKind::Ui
+    }
+}
+
+impl UiPlugin for Disk {
     fn filename(&self) -> &'static str {
         "disk.jpg"
     }

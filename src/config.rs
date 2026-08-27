@@ -29,6 +29,22 @@ pub struct AppConfig {
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct PluginCfg {
     pub enabled: Option<bool>, // absent section or absent key => enabled
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>, // credential for plugins that need one
+}
+
+impl AppConfig {
+    /// Credential configured for a plugin, if any. Plugins fall back to their
+    /// own environment variables when this is absent.
+    pub fn plugin_api_key(&self, plugin: &str) -> Option<String> {
+        self.plugins
+            .as_ref()?
+            .get(plugin)?
+            .api_key
+            .as_ref()
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+    }
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -77,9 +93,13 @@ fn default_config_toml() -> String {
          # image_mode = \"append\"  # append | only-stats\n\
          backup_retention = 5      # backup directories kept\n",
     );
-    for name in crate::plugins::known_plugin_names() {
+    for name in crate::plugins::ui_plugin_names() {
         out.push_str(&format!("\n[plugins.{name}]\nenabled = true\n"));
     }
+    out.push_str(&format!(
+        "\n# renderer plugins (always available, not toggleable): {}\n",
+        crate::plugins::renderer_plugin_names().join(", ")
+    ));
     out
 }
 

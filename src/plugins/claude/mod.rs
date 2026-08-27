@@ -1,10 +1,9 @@
-pub mod render;
-
 use anyhow::{Context, Result};
 use image::RgbaImage;
 use serde::Deserialize;
 
-use crate::plugin::Plugin;
+use crate::plugin::{Plugin, PluginKind, UiPlugin};
+use crate::plugins::agents_usage_ui::{self, UsageWindowData};
 
 #[derive(Debug, Deserialize)]
 pub struct StatsPayload {
@@ -36,61 +35,21 @@ pub struct PaceInfo {
     pub eta_minutes: Option<f64>,
 }
 
-/// Compute pace locally when the API doesn't provide it.
-/// Mirrors the logic in claude-code-stats/src/types.rs.
-fn compute_pace(utilization: f64, resets_in_minutes: f64, window_minutes: f64) -> Option<PaceInfo> {
-    if window_minutes <= 0.0 || resets_in_minutes <= 0.0 || resets_in_minutes > window_minutes {
-        return None;
-    }
-
-    let elapsed = (window_minutes - resets_in_minutes) * 60.0;
-    let duration = window_minutes * 60.0;
-    let time_left = resets_in_minutes * 60.0;
-
-    let actual = utilization.clamp(0.0, 100.0);
-    let expected = ((elapsed / duration) * 100.0).clamp(0.0, 100.0);
-
-    if (elapsed == 0.0 && actual > 0.0) || expected < 3.0 {
-        return None;
-    }
-
-    let delta = actual - expected;
-
-    let (will_last_to_reset, eta_minutes) = if elapsed > 0.0 && actual > 0.0 {
-        let rate = actual / elapsed;
-        if rate > 0.0 {
-            let remaining = (100.0 - actual).max(0.0);
-            let candidate = remaining / rate;
-            if candidate >= time_left {
-                (true, None)
-            } else {
-                (false, Some(candidate / 60.0))
-            }
-        } else {
-            (true, None)
-        }
-    } else if elapsed > 0.0 {
-        (true, None)
-    } else {
-        return None;
-    };
-
-    Some(PaceInfo {
-        delta_percent: delta,
-        expected_percent: expected,
-        will_last_to_reset,
-        eta_minutes,
-    })
-}
-
-/// Fill in pace data for windows that don't have it.
+/// Fill in pace data for windows the API left blank.
 fn ensure_pace(window: &mut UsageWindow, window_minutes: f64) {
     if window.pace.is_some() {
         return;
     }
-    if let Some(resets_in) = window.resets_in_minutes {
-        window.pace = compute_pace(window.utilization, resets_in, window_minutes);
-    }
+    let Some(resets_in) = window.resets_in_minutes else {
+        return;
+    };
+    window.pace =
+        agents_usage_ui::pace(window.utilization, resets_in, window_minutes).map(|p| PaceInfo {
+            delta_percent: p.delta_percent,
+            expected_percent: p.expected_percent,
+            will_last_to_reset: p.will_last_to_reset,
+            eta_minutes: p.eta_minutes,
+        });
 }
 
 pub fn fetch_stats() -> Result<ActiveData> {
@@ -128,6 +87,12 @@ impl Plugin for Claude {
         "claude"
     }
 
+    fn get_plugin_kind(&self) -> PluginKind {
+        PluginKind::Ui
+    }
+}
+
+impl UiPlugin for Claude {
     fn filename(&self) -> &'static str {
         "claude.jpg"
     }
@@ -148,12 +113,12 @@ impl Plugin for Claude {
             windows.push(window_data("Weekly", w));
         }
 
-        render::render_usage_bars(&windows, data.updated_at.as_deref())
+        agents_usage_ui::render_usage_bars("Claude Code", &windows, data.updated_at.as_deref())
     }
 }
 
-fn window_data(label: &str, w: &UsageWindow) -> render::UsageWindowData {
-    render::UsageWindowData {
+fn window_data(label: &str, w: &UsageWindow) -> UsageWindowData {
+    UsageWindowData {
         label: label.to_string(),
         utilization: w.utilization,
         usage_level: w.usage_level.clone(),

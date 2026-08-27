@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use image::RgbaImage;
 
 use crate::device::Model;
-use crate::plugin::Plugin;
+use crate::plugin::UiPlugin;
 
 #[derive(Parser)]
 #[command(about = "Push extensible monitor screens to a GeekMagic display")]
@@ -98,8 +98,8 @@ fn now() -> String {
 }
 
 /// One collect+render pass over the plugin list; failures are per-plugin.
-fn collect_render(plugins: &mut [Box<dyn Plugin>], parallel: bool) -> Vec<(&'static str, RgbaImage)> {
-    let run_one = |p: &mut Box<dyn Plugin>| -> Result<(&'static str, RgbaImage)> {
+fn collect_render(plugins: &mut [Box<dyn UiPlugin>], parallel: bool) -> Vec<(&'static str, RgbaImage)> {
+    let run_one = |p: &mut Box<dyn UiPlugin>| -> Result<(&'static str, RgbaImage)> {
         p.collect()?;
         let img = p.render()?;
         Ok((p.filename(), img))
@@ -131,7 +131,7 @@ fn collect_render(plugins: &mut [Box<dyn Plugin>], parallel: bool) -> Vec<(&'sta
 }
 
 fn run_cycle(
-    plugins: &mut [Box<dyn Plugin>],
+    plugins: &mut [Box<dyn UiPlugin>],
     args: &RuntimeArgs,
     device: &mut Option<device::DeviceInfo>,
 ) -> Result<()> {

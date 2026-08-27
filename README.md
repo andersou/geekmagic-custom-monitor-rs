@@ -6,7 +6,7 @@ Based on [geekmagic-stats](https://github.com/jimmystridh/geekmagic-stats).
 
 ## Features
 
-- Built-in plugins for Claude Code usage and local disk usage.
+- Built-in plugins for Claude Code usage, Kimi Code plan quota, and local disk usage.
 - Automatic SmallTV Ultra and SmallTV Pro detection.
 - One-shot or periodic execution.
 - Optional parallel rendering.
@@ -71,6 +71,10 @@ enabled = true
 
 [plugins.disk]
 enabled = true
+
+[plugins.kimi]
+enabled = true
+# api_key = "sk-kimi-..."       # optional: else KIMI_CODE_API_KEY, KIMI_API_KEY, or a Kimi Code CLI login
 ```
 
 Backups created by `only-stats` are stored in:
@@ -136,42 +140,48 @@ A device file is deleted only after its local backup has been saved successfully
 ## Plugin architecture
 
 ```text
-+------------------------------------------+
-|                                          |
-|       src/plugin.rs - Plugin trait       |
-|                                          |
-+------------------------------------------+
-                      v
-+------------------------------------------+
-|                                          |
-|      src/plugins/mod.rs - registry       |
-|                                          |
-+------------------------------------------+
-                      v---------------------------------------------v
-+------------------------------------------+      +----------------------------------+
-|                                          |      |                                  |
-|    claude/mod.rs - collect and Plugin    |      | disk/mod.rs - collect and Plugin |
-|                                          |      |                                  |
-+------------------------------------------+      +----------------------------------+
-                      v                                             v
-+------------------------------------------+      +----------------------------------+
-|                                          |      |                                  |
-|   claude/render.rs - render claude.jpg   |      | disk/render.rs - render disk.jpg |
-|                                          |      |                                  |
-+-------------------uses-------------------+      +----------------------------------+
-                      v                                             |
-+------------------------------------------+                        |
-|                                          |                        |
-| src/render/common.rs - shared primitives |<--------uses-----------+
-|                                          |
-+------------------------------------------+
++----------------------------------------------------------------+
+|     src/plugin.rs - PluginKind, Plugin and UiPlugin traits     |
++----------------------------------------------------------------+
+                                v
++----------------------------------------------------------------+
+|           src/plugins/mod.rs - catalog and registry            |
++----------------------------------------------------------------+
+         v----------------------v----------------------v
++------------------+   +------------------+   +------------------+
+|  claude/mod.rs   |   |   kimi/mod.rs    |   |   disk/mod.rs    |
+|   collect + Ui   |   |   collect + Ui   |   |   collect + Ui   |
++------------------+   +------------------+   +------------------+
+         |                      |                      v
+         +---------uses---------+             +------------------+
+                    v                         |  disk/render.rs  |
++-------------------------------------+       | render disk.jpg  |
+|    plugins/agents_usage_ui/mod.rs   |       +------------------+
+|  renderer: claude.jpg and kimi.jpg  |                |
++-------------------------------------+                |
+                    v                                  |
++-------------------------------------+                |
+|  src/render/common.rs - primitives  |<-----uses------+
++-------------------------------------+
 ```
 
-The contract is defined in `src/plugin.rs`:
+The contract is defined in `src/plugin.rs`. A plugin's kind is part of the contract, so the registry, the generated configuration, and the `setup` interview all derive from the plugin list itself:
 
 ```rust
+pub enum PluginKind {
+    Ui,       // one 240x240 screen, toggleable under [plugins.<name>]
+    Renderer, // shared drawing code imported by UI plugins
+}
+
 pub trait Plugin: Send {
     fn name(&self) -> &'static str;
+    fn get_plugin_kind(&self) -> PluginKind;
+    fn needs_api_key(&self) -> bool {
+        false
+    }
+}
+
+pub trait UiPlugin: Plugin {
     fn filename(&self) -> &'static str;
     fn collect(&mut self) -> anyhow::Result<()>;
     fn render(&self) -> anyhow::Result<image::RgbaImage>;
@@ -182,6 +192,8 @@ pub trait Plugin: Send {
 ```
 
 - `name()` is the key used by `[plugins.<name>]` in TOML.
+- `get_plugin_kind()` decides whether the plugin owns a screen. Only `Ui` plugins are enableable, collected, rendered, and uploaded; `Renderer` plugins are imported by them and never appear in the configuration.
+- `needs_api_key()` makes `setup` ask for a credential and `[plugins.<name>].api_key` be honoured.
 - `filename()` defines the file uploaded to the device and the keep list used by `only-stats`.
 - `collect()` refreshes the plugin's internal state during each cycle.
 - `render()` converts the collected state into the image that will be uploaded.
@@ -189,14 +201,14 @@ pub trait Plugin: Send {
 
 Plugin instances are created once by `plugins::registry()` and reused for the entire process lifetime. Each cycle calls `collect()` and then `render()`. A plugin failure skips only that plugin's screen for the current cycle; other plugins continue.
 
-Each plugin keeps its collector and renderer in its own directory. `src/render/common.rs` contains only genuinely shared primitives such as text, colors, and shapes. Renderer modules remain available at compile time even when their corresponding plugins are disabled in configuration.
+A plugin keeps its collector next to the renderer it owns. Drawing code shared by several screens becomes a `Renderer` plugin of its own — `agents-usage-ui` draws the usage bars for both Claude Code and Kimi Code. `src/render/common.rs` contains only genuinely shared primitives such as text, colors, and shapes. Renderer modules remain available at compile time even when their corresponding plugins are disabled in configuration.
 
 ### Adding a plugin
 
 1. Create `src/plugins/<name>/mod.rs` and, when needed, `render.rs`.
-2. Implement `Plugin` for the plugin's main type.
+2. Implement `Plugin` (with `PluginKind::Ui`) and `UiPlugin` for the plugin's main type.
 3. Declare the module in `src/plugins/mod.rs`.
-4. Add the name to `known_plugin_names()` and the instance to `registry()`.
+4. Add the instance to `ui_plugins()`; the name, kind, and credential lists are derived from it.
 5. Configure the plugin:
 
 ```toml

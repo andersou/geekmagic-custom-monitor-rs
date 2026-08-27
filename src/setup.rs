@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use anyhow::{Context, Result};
 
 use crate::config::{self, AppConfig, PluginCfg};
+use crate::plugin::PluginKind;
 use crate::plugins;
 use crate::upload;
 
@@ -83,15 +84,35 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
     }
 
     let mut plugin_configs = std::collections::BTreeMap::new();
-    for name in plugins::known_plugin_names() {
-        let default = existing
-            .plugins
-            .as_ref()
-            .and_then(|plugins| plugins.get(*name))
-            .and_then(|plugin| plugin.enabled)
-            .unwrap_or(true);
+    for plugin in plugins::catalog() {
+        if plugin.get_plugin_kind() != PluginKind::Ui {
+            continue;
+        }
+        let name = plugin.name();
+        let existing_cfg = existing.plugins.as_ref().and_then(|plugins| plugins.get(name));
+        let default = existing_cfg.and_then(|plugin| plugin.enabled).unwrap_or(true);
         let enabled = prompt_bool(&format!("enable plugin '{name}'?"), default)?;
-        plugin_configs.insert((*name).to_string(), PluginCfg { enabled: Some(enabled) });
+
+        // Only plugins that authenticate ask for a key; blank keeps the
+        // environment/CLI fallback.
+        let api_key = if enabled && plugin.needs_api_key() {
+            let current = existing_cfg.and_then(|plugin| plugin.api_key.clone());
+            let answer = prompt(
+                &format!("api key for '{name}' (blank = environment or CLI login)"),
+                current.as_deref(),
+            )?;
+            (!answer.trim().is_empty()).then(|| answer.trim().to_string())
+        } else {
+            existing_cfg.and_then(|plugin| plugin.api_key.clone())
+        };
+
+        plugin_configs.insert(
+            name.to_string(),
+            PluginCfg {
+                enabled: Some(enabled),
+                api_key,
+            },
+        );
     }
 
     let output = AppConfig {

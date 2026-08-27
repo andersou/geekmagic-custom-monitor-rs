@@ -1,15 +1,30 @@
-//! Reusable usage-bars renderer. Takes plain data structs, never plugin types —
-//! any plugin (e.g. a future Codex plugin) can build `UsageWindowData` and call
-//! `render_usage_bars`, whether or not the claude plugin is enabled in TOML.
+//! Renderer plugin `agents-usage-ui`: the usage-bars screen shared by coding
+//! agent plan-quota plugins — header, one panel per usage window, progress bar
+//! with pace marker. Takes plain data structs, never plugin types.
 
 use ab_glyph::{FontArc, PxScale};
 use anyhow::Result;
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 
+use crate::plugin::{Plugin, PluginKind};
 use crate::render::common::{
     self, BG, H, PANEL_BG, SEPARATOR, TEXT_DIM, TEXT_MUTED, TEXT_PRIMARY, W,
 };
+
+/// Metadata handle. A renderer has no screen, so it implements `Plugin` only:
+/// `registry()` cannot hold it and the config cannot enable it.
+pub struct AgentsUsageUi;
+
+impl Plugin for AgentsUsageUi {
+    fn name(&self) -> &'static str {
+        "agents-usage-ui"
+    }
+
+    fn get_plugin_kind(&self) -> PluginKind {
+        PluginKind::Renderer
+    }
+}
 
 const BAR_TRACK: Rgba<u8> = Rgba([40, 40, 50, 255]);
 const BAR_FILL_LEFT: Rgba<u8> = Rgba([59, 130, 246, 255]);
@@ -29,6 +44,68 @@ pub struct UsageWindowData {
     pub resets_in_minutes: Option<f64>,
     pub will_last_to_reset: Option<bool>,
     pub eta_minutes: Option<f64>,
+}
+
+/// Pace of a usage window: how consumption compares to elapsed time.
+pub struct Pace {
+    pub delta_percent: f64,
+    pub expected_percent: f64,
+    pub will_last_to_reset: bool,
+    pub eta_minutes: Option<f64>,
+}
+
+/// Derive pace from utilization alone, for APIs that don't report it.
+/// Mirrors the logic in claude-code-stats/src/types.rs.
+pub fn pace(utilization: f64, resets_in_minutes: f64, window_minutes: f64) -> Option<Pace> {
+    if window_minutes <= 0.0 || resets_in_minutes <= 0.0 || resets_in_minutes > window_minutes {
+        return None;
+    }
+
+    let elapsed = (window_minutes - resets_in_minutes) * 60.0;
+    let duration = window_minutes * 60.0;
+    let time_left = resets_in_minutes * 60.0;
+
+    let actual = utilization.clamp(0.0, 100.0);
+    let expected = ((elapsed / duration) * 100.0).clamp(0.0, 100.0);
+
+    if (elapsed == 0.0 && actual > 0.0) || expected < 3.0 {
+        return None;
+    }
+
+    let (will_last_to_reset, eta_minutes) = if elapsed > 0.0 && actual > 0.0 {
+        let rate = actual / elapsed;
+        if rate > 0.0 {
+            let candidate = (100.0 - actual).max(0.0) / rate;
+            if candidate >= time_left {
+                (true, None)
+            } else {
+                (false, Some(candidate / 60.0))
+            }
+        } else {
+            (true, None)
+        }
+    } else if elapsed > 0.0 {
+        (true, None)
+    } else {
+        return None;
+    };
+
+    Some(Pace {
+        delta_percent: actual - expected,
+        expected_percent: expected,
+        will_last_to_reset,
+        eta_minutes,
+    })
+}
+
+/// Usage level string that `bar_colors` understands, derived from utilization
+/// for APIs that report only raw numbers.
+pub fn usage_level(utilization: f64) -> &'static str {
+    match utilization {
+        u if u >= 95.0 => "danger",
+        u if u >= 75.0 => "warn",
+        _ => "moderate",
+    }
 }
 
 fn bar_colors(usage_level: &str) -> (Rgba<u8>, Rgba<u8>) {
@@ -171,6 +248,7 @@ fn format_updated_time(iso: &str) -> String {
 }
 
 pub fn render_usage_bars(
+    title: &str,
     windows: &[UsageWindowData],
     updated_at: Option<&str>,
 ) -> Result<RgbaImage> {
@@ -195,7 +273,7 @@ pub fn render_usage_bars(
     let right_edge = (W as i32) - mx;
     let content_w = (right_edge - mx) as u32;
 
-    // ── Header: "Claude Code" + updated time ──
+    // ── Header: screen title + updated time ──
     let header_y = 10;
     draw_text_mut(
         &mut img,
@@ -204,7 +282,7 @@ pub fn render_usage_bars(
         header_y,
         PxScale::from(17.0),
         font_bold,
-        "Claude Code",
+        title,
     );
 
     // Updated timestamp (right-aligned, bigger)
@@ -427,6 +505,7 @@ mod tests {
         // Session without pace row, Weekly with it: the case that used to leave
         // dead space up top and shove the last row against the bottom edge.
         let img = render_usage_bars(
+            "Claude Code",
             &[window("Session", 1.0, false), window("Weekly", 0.0, true)],
             Some("2026-08-27T18:43:00Z"),
         )
@@ -444,7 +523,8 @@ mod tests {
     fn panels_fit_when_both_windows_have_a_pace_row() {
         // Tallest layout: 4 rows per section. Must still fit inside 240px.
         let img = render_usage_bars(
-            &[window("Session", 62.0, true), window("Weekly", 41.0, true)],
+            "Kimi Code",
+            &[window("5h", 62.0, true), window("Weekly", 41.0, true)],
             Some("2026-08-27T18:43:00Z"),
         )
         .unwrap();
