@@ -1,0 +1,23 @@
+# Rust build output
+/target/
+
+# Local runtime configuration and output
+/config.toml
+/preview/
+*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Rust formatter backups
+**/*.rs.bk

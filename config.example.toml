@@ -1,0 +1,13 @@
+host = "192.168.1.201"
+model = "auto"             # auto | ultra | pro
+interval = 300             # omit for one-shot
+parallel_render = true
+autoplay_interval = 10
+image_mode = "append"    # append | only-stats (only-stats deletes non-app images, with local backup)
+backup_retention = 5   # number of backup directories kept
+
+[plugins.claude]
+enabled = true
+
+[plugins.disk]
+enabled = true
