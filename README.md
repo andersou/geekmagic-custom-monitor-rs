@@ -2,7 +2,7 @@
 
 Extensible Rust monitors for GeekMagic SmallTV displays. The program collects metrics, renders images, and uploads them to the device in album mode.
 
-This project is based on [geekmagic-stats](https://github.com/jimmystridh/geekmagic-stats), but it is independent: all required source code, fonts, and resources are included in this repository. You do not need to clone the original project or copy files from it.
+Based on [geekmagic-stats](https://github.com/jimmystridh/geekmagic-stats).
 
 ## Features
 
