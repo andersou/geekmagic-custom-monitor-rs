@@ -58,12 +58,13 @@ pub struct Window {
     pub time_unit: String,
 }
 
-/// Counts arrive as strings ("2048"), so they are parsed, not deserialized as
-/// numbers.
+/// Counts arrive as strings ("2048"). Kimi currently reports `used` for the
+/// weekly pool but only `remaining` for rate-limit windows.
 #[derive(Debug, Deserialize)]
 pub struct QuotaDetail {
     pub limit: String,
-    pub used: String,
+    pub used: Option<String>,
+    pub remaining: Option<String>,
     #[serde(rename = "resetTime")]
     pub reset_time: Option<String>,
 }
@@ -97,13 +98,23 @@ impl QuotaDetail {
             .limit
             .parse()
             .with_context(|| format!("unparseable quota limit '{}'", self.limit))?;
-        let used: f64 = self
-            .used
-            .parse()
-            .with_context(|| format!("unparseable quota usage '{}'", self.used))?;
         if limit <= 0.0 {
             return Ok(0.0);
         }
+        let used: f64 = match &self.used {
+            Some(used) => used
+                .parse()
+                .with_context(|| format!("unparseable quota usage '{used}'"))?,
+            None => {
+                let remaining: f64 = self
+                    .remaining
+                    .as_deref()
+                    .context("Kimi quota has neither used nor remaining")?
+                    .parse()
+                    .with_context(|| "unparseable Kimi quota remaining")?;
+                limit - remaining
+            }
+        };
         Ok((used / limit * 100.0).clamp(0.0, 100.0))
     }
 
@@ -453,6 +464,54 @@ impl fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
+const RESPONSE_BODY_LIMIT: usize = 1_000;
+
+fn redact_json_secrets(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                let key = key.to_ascii_lowercase();
+                if key.contains("token")
+                    || key.contains("authorization")
+                    || key.contains("api_key")
+                    || key.contains("secret")
+                    || key.contains("password")
+                    || key.contains("cookie")
+                {
+                    *value = Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_json_secrets(value);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_json_secrets(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn response_body_excerpt(body: &str) -> String {
+    let excerpt: String = body.trim().chars().take(RESPONSE_BODY_LIMIT).collect();
+    let mut value = match serde_json::from_str::<Value>(&excerpt) {
+        Ok(value) => value,
+        Err(_) => return excerpt,
+    };
+    redact_json_secrets(&mut value);
+    serde_json::to_string(&value).unwrap_or(excerpt)
+}
+
+fn decode_usages(body: &str) -> std::result::Result<UsagesResponse, FetchError> {
+    serde_json::from_str(body).map_err(|error| {
+        FetchError::Other(anyhow!(error).context(format!(
+            "failed to parse kimi usage payload; response body: {}",
+            response_body_excerpt(body)
+        )))
+    })
+}
+
 pub fn fetch_usages(token: &str) -> std::result::Result<UsagesResponse, FetchError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -472,14 +531,9 @@ pub fn fetch_usages(token: &str) -> std::result::Result<UsagesResponse, FetchErr
         FetchError::Other(anyhow!(error).context("failed to read kimi usage response"))
     })?;
     if !status.is_success() {
-        return Err(FetchError::Status(
-            status,
-            body.trim().chars().take(200).collect(),
-        ));
+        return Err(FetchError::Status(status, response_body_excerpt(&body)));
     }
-    serde_json::from_str(&body).map_err(|error| {
-        FetchError::Other(anyhow!(error).context("failed to parse kimi usage payload"))
-    })
+    decode_usages(&body)
 }
 
 fn fetch_with_refresh<F, R>(
@@ -659,6 +713,40 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         windows(&usages, now).unwrap()
+    }
+
+    #[test]
+    fn parse_failure_includes_a_redacted_response_body() {
+        let error = decode_usages(
+            r#"{"limits":"unexpected","authorization":"Bearer request-token","nested":{"api_key":"api-secret"}}"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("response body"));
+        assert!(error.contains("[REDACTED]"));
+        assert!(!error.contains("request-token"));
+        assert!(!error.contains("api-secret"));
+    }
+
+    #[test]
+    fn parses_remaining_only_rate_limit_detail() {
+        let usages = decode_usages(
+            r#"{
+                "usage": {"limit": "100", "used": "49", "remaining": "51"},
+                "limits": [{
+                    "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                    "detail": {"limit": "100", "remaining": "100"}
+                }]
+            }"#,
+        )
+        .unwrap();
+        let windows = windows(&usages, Utc::now()).unwrap();
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].label, "5h");
+        assert_eq!(windows[0].utilization, 0.0);
+        assert_eq!(windows[1].utilization, 49.0);
     }
 
     fn empty_usages() -> UsagesResponse {
