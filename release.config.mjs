@@ -30,7 +30,7 @@ export default {
       "@semantic-release/exec",
       {
         verifyReleaseCmd:
-          'if [ -n "${EXPECTED_VERSION:-}" ] && [ "${EXPECTED_VERSION}" != "${nextRelease.version}" ]; then printf "%s\\n" "planned version ${EXPECTED_VERSION} does not match ${nextRelease.version}" >&2; exit 1; fi',
+          'if [ -n "$EXPECTED_VERSION" ] && [ "$EXPECTED_VERSION" != "${nextRelease.version}" ]; then printf "%s\\n" "planned version $EXPECTED_VERSION does not match ${nextRelease.version}" >&2; exit 1; fi',
         prepareCmd:
           "sh scripts/vfox-rust cargo set-version ${nextRelease.version} && sh scripts/vfox-rust cargo metadata --locked --no-deps",
       },
