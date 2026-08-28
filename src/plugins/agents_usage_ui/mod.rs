@@ -249,6 +249,7 @@ fn format_updated_time(iso: &str) -> String {
 
 pub fn render_usage_bars(
     title: &str,
+    icon: &RgbaImage,
     windows: &[UsageWindowData],
     updated_at: Option<&str>,
 ) -> Result<RgbaImage> {
@@ -273,12 +274,13 @@ pub fn render_usage_bars(
     let right_edge = (W as i32) - mx;
     let content_w = (right_edge - mx) as u32;
 
-    // ── Header: screen title + updated time ──
+    // ── Header: icon, screen title + updated time ──
     let header_y = 10;
+    image::imageops::overlay(&mut img, icon, 16, header_y.into());
     draw_text_mut(
         &mut img,
         TEXT_PRIMARY,
-        mx,
+        40,
         header_y,
         PxScale::from(17.0),
         font_bold,
@@ -486,6 +488,10 @@ mod tests {
         }
     }
 
+    fn icon() -> RgbaImage {
+        RgbaImage::from_pixel(18, 18, Rgba([255, 0, 255, 255]))
+    }
+
     /// Rows of `img` that contain no panel pixel, i.e. background-only bands.
     fn empty_rows(img: &RgbaImage) -> Vec<u32> {
         (0..H)
@@ -504,8 +510,10 @@ mod tests {
     fn panels_fit_and_stay_separated_with_mixed_row_counts() {
         // Session without pace row, Weekly with it: the case that used to leave
         // dead space up top and shove the last row against the bottom edge.
+        let icon = icon();
         let img = render_usage_bars(
             "Claude Code",
+            &icon,
             &[window("Session", 1.0, false), window("Weekly", 0.0, true)],
             Some("2026-08-27T18:43:00Z"),
         )
@@ -522,8 +530,10 @@ mod tests {
     #[test]
     fn panels_fit_when_both_windows_have_a_pace_row() {
         // Tallest layout: 4 rows per section. Must still fit inside 240px.
+        let icon = icon();
         let img = render_usage_bars(
             "Kimi Code",
+            &icon,
             &[window("5h", 62.0, true), window("Weekly", 41.0, true)],
             Some("2026-08-27T18:43:00Z"),
         )
@@ -535,4 +545,26 @@ mod tests {
             "panels are fused when both sections are tall"
         );
     }
+
+    #[test]
+    fn header_places_icon_before_title() {
+        let icon = icon();
+        let img = render_usage_bars(
+            "Claude Code",
+            &icon,
+            &[window("Session", 1.0, false)],
+            Some("2026-08-27T18:43:00Z"),
+        )
+        .unwrap();
+
+        for y in 10..=27 {
+            for x in 16..=33 {
+                assert_eq!(*img.get_pixel(x, y), Rgba([255, 0, 255, 255]));
+            }
+        }
+        assert!(
+            (10..=32).any(|y| (40..=159).any(|x| *img.get_pixel(x, y) == TEXT_PRIMARY))
+        );
+    }
+
 }

@@ -1,5 +1,6 @@
 /// UI plugins: one screen each, toggleable under `[plugins.<name>]`.
 pub mod claude;
+pub mod codex;
 pub mod disk;
 pub mod kimi;
 
@@ -15,6 +16,7 @@ use crate::plugin::{Plugin, PluginKind, UiPlugin};
 fn ui_plugins(cfg: &AppConfig) -> Vec<Box<dyn UiPlugin>> {
     vec![
         Box::new(claude::Claude::new()),
+        Box::new(codex::Codex::new()),
         Box::new(disk::Disk::new()),
         Box::new(kimi::Kimi::new(cfg.plugin_api_key("kimi"))),
     ]
@@ -97,6 +99,7 @@ mod tests {
     fn default_config_enables_every_ui_plugin_and_no_renderer() {
         let built: Vec<&str> = registry(&AppConfig::default()).iter().map(|p| p.name()).collect();
         assert_eq!(built, ui_plugin_names());
+        assert!(built.contains(&"codex"));
         assert!(!built.contains(&"agents-usage-ui"));
     }
 }

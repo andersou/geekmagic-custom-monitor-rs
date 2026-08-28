@@ -82,6 +82,18 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
     if backup_retention == 0 {
         anyhow::bail!("backup retention must be at least 1");
     }
+    let threshold_default = existing
+        .failure_threshold
+        .unwrap_or(config::DEFAULT_FAILURE_THRESHOLD)
+        .to_string();
+    let failure_threshold = prompt("failed cycles before a plugin error screen", Some(&threshold_default))?;
+    let failure_threshold: u32 = failure_threshold
+        .parse()
+        .with_context(|| format!("invalid failure threshold '{failure_threshold}'"))?;
+    if failure_threshold == 0 {
+        anyhow::bail!("failure threshold must be at least 1");
+    }
+
 
     let mut plugin_configs = std::collections::BTreeMap::new();
     for plugin in plugins::catalog() {
@@ -123,6 +135,7 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
         autoplay_interval: Some(autoplay),
         image_mode: Some(image_mode),
         backup_retention: Some(backup_retention),
+        failure_threshold: Some(failure_threshold),
         plugins: Some(plugin_configs),
     };
     let out = toml::to_string_pretty(&output).context("failed to serialize config")?;

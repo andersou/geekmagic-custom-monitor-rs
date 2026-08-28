@@ -1,16 +1,25 @@
 use anyhow::{Context, Result};
-use image::RgbaImage;
+use claude_code_stats::source::{SourceError, UsageSource, oauth::OauthSource};
+use claude_code_stats::source::{fetch_with_failover, web::WebSource};
+use claude_code_stats::types::to_usage_window;
+use image::{ImageFormat, RgbaImage};
 use serde::Deserialize;
 
 use crate::plugin::{Plugin, PluginKind, UiPlugin};
 use crate::plugins::agents_usage_ui::{self, UsageWindowData};
 
-#[derive(Debug, Deserialize)]
-pub struct StatsPayload {
-    #[allow(dead_code)]
-    pub status: String,
-    pub data: Option<ActiveData>,
+const ICON_BYTES: &[u8] = include_bytes!("icon.png");
+
+fn icon() -> &'static RgbaImage {
+    static ICON: std::sync::LazyLock<RgbaImage> = std::sync::LazyLock::new(|| {
+        image::load_from_memory_with_format(ICON_BYTES, ImageFormat::Png)
+            .expect("embedded Claude icon must be valid PNG")
+            .into_rgba8()
+    });
+    &ICON
 }
+
+const MAX_CLI_REFRESH_RETRIES: u32 = 2;
 
 #[derive(Debug, Deserialize)]
 pub struct ActiveData {
@@ -44,32 +53,82 @@ fn ensure_pace(window: &mut UsageWindow, window_minutes: f64) {
         return;
     };
     window.pace =
-        agents_usage_ui::pace(window.utilization, resets_in, window_minutes).map(|p| PaceInfo {
-            delta_percent: p.delta_percent,
-            expected_percent: p.expected_percent,
-            will_last_to_reset: p.will_last_to_reset,
-            eta_minutes: p.eta_minutes,
+        agents_usage_ui::pace(window.utilization, resets_in, window_minutes).map(|pace| PaceInfo {
+            delta_percent: pace.delta_percent,
+            expected_percent: pace.expected_percent,
+            will_last_to_reset: pace.will_last_to_reset,
+            eta_minutes: pace.eta_minutes,
         });
 }
 
 pub fn fetch_stats() -> Result<ActiveData> {
-    let payload_json = claude_code_stats::collect_widget_payload_json();
-    let payload: StatsPayload =
-        serde_json::from_str(&payload_json).context("failed to parse claude-code-stats payload")?;
+    // Bypass the crate's collect_widget_payload_json: its private cache layer
+    // hardcodes CliProbeSource, whose PTY probe double-closes the master fd and
+    // aborts the whole process (observed: "IO Safety violation: owned file
+    // descriptor already closed"). Fetch via the public failover with the OAuth
+    // and Web sources only; the skipped 4-minute cache never hits at our >=300s
+    // daemon intervals anyway.
+    let now = chrono::Utc::now();
+    let sources: Vec<&dyn UsageSource> = vec![&OauthSource, &WebSource];
+    let (usage, _source) = fetch_with_failover(&sources)?;
+    let mut data: ActiveData = serde_json::from_value(serde_json::json!({
+        "five_hour": usage.five_hour.as_ref().map(|w| to_usage_window(w, now, Some(300.0))),
+        "seven_day": usage.seven_day.as_ref().map(|w| to_usage_window(w, now, Some(10080.0))),
+        "updated_at": now.to_rfc3339(),
+    }))
+    .context("failed to map claude-code-stats usage")?;
 
-    let mut data = payload
-        .data
-        .context("claude-code-stats returned non-active status")?;
-
-    // Compute pace locally if not provided
-    if let Some(w) = &mut data.five_hour {
-        ensure_pace(w, 300.0); // 5 hours
+    // Compute pace locally if not provided.
+    if let Some(window) = &mut data.five_hour {
+        ensure_pace(window, 300.0); // 5 hours
     }
-    if let Some(w) = &mut data.seven_day {
-        ensure_pace(w, 10080.0); // 7 days
+    if let Some(window) = &mut data.seven_day {
+        ensure_pace(window, 10080.0); // 7 days
     }
-
     Ok(data)
+}
+
+/// Query only the OAuth source so a later web/CLI fallback cannot overwrite an
+/// OAuth 401 in claude-code-stats' aggregate error payload.
+fn oauth_is_unauthorized() -> bool {
+    matches!(
+        OauthSource.try_fetch(),
+        Err(SourceError::Failed(error)) if error.to_string().contains("status 401")
+    )
+}
+
+/// Ask Claude Code to attempt delegated OAuth renewal. The upstream crate uses
+/// the same invocation but describes renewal as potential, not guaranteed.
+fn cli_refresh() -> Result<()> {
+    let output = std::process::Command::new("claude")
+        .arg("--version")
+        .output()
+        .context("failed to run Claude Code CLI for OAuth renewal")?;
+    if !output.status.success() {
+        anyhow::bail!("Claude Code CLI OAuth renewal exited with {}", output.status);
+    }
+    Ok(())
+}
+
+fn fetch_with_cli_refresh<F, U, R>(mut fetch: F, mut unauthorized: U, mut refresh: R) -> Result<ActiveData>
+where
+    F: FnMut() -> Result<ActiveData>,
+    U: FnMut() -> bool,
+    R: FnMut() -> Result<()>,
+{
+    let mut retries = 0;
+    loop {
+        match fetch() {
+            Ok(data) => return Ok(data),
+            Err(error) => {
+                if retries == MAX_CLI_REFRESH_RETRIES || !unauthorized() {
+                    return Err(error);
+                }
+                refresh()?;
+                retries += 1;
+            }
+        }
+    }
 }
 
 pub struct Claude {
@@ -98,7 +157,7 @@ impl UiPlugin for Claude {
     }
 
     fn collect(&mut self) -> Result<()> {
-        self.data = Some(fetch_stats()?);
+        self.data = Some(fetch_with_cli_refresh(fetch_stats, oauth_is_unauthorized, cli_refresh)?);
         Ok(())
     }
 
@@ -106,26 +165,123 @@ impl UiPlugin for Claude {
         let data = self.data.as_ref().context("collect() has not run")?;
 
         let mut windows = Vec::new();
-        if let Some(w) = &data.five_hour {
-            windows.push(window_data("Session", w));
+        if let Some(window) = &data.five_hour {
+            windows.push(window_data("Session", window));
         }
-        if let Some(w) = &data.seven_day {
-            windows.push(window_data("Weekly", w));
+        if let Some(window) = &data.seven_day {
+            windows.push(window_data("Weekly", window));
         }
 
-        agents_usage_ui::render_usage_bars("Claude Code", &windows, data.updated_at.as_deref())
+        agents_usage_ui::render_usage_bars(
+            "Claude Code",
+            icon(),
+            &windows,
+            data.updated_at.as_deref(),
+        )
     }
 }
 
-fn window_data(label: &str, w: &UsageWindow) -> UsageWindowData {
+fn window_data(label: &str, window: &UsageWindow) -> UsageWindowData {
     UsageWindowData {
         label: label.to_string(),
-        utilization: w.utilization,
-        usage_level: w.usage_level.clone(),
-        expected_percent: w.pace.as_ref().map(|p| p.expected_percent),
-        delta_percent: w.pace.as_ref().map(|p| p.delta_percent),
-        resets_in_minutes: w.resets_in_minutes,
-        will_last_to_reset: w.pace.as_ref().map(|p| p.will_last_to_reset),
-        eta_minutes: w.pace.as_ref().and_then(|p| p.eta_minutes),
+        utilization: window.utilization,
+        usage_level: window.usage_level.clone(),
+        expected_percent: window.pace.as_ref().map(|pace| pace.expected_percent),
+        delta_percent: window.pace.as_ref().map(|pace| pace.delta_percent),
+        resets_in_minutes: window.resets_in_minutes,
+        will_last_to_reset: window.pace.as_ref().map(|pace| pace.will_last_to_reset),
+        eta_minutes: window.pace.as_ref().and_then(|pace| pace.eta_minutes),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+
+    fn active_data() -> ActiveData {
+        ActiveData {
+            five_hour: None,
+            seven_day: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn embedded_icon_is_valid() {
+        let icon = icon();
+        assert_eq!(icon.dimensions(), (18, 18));
+        assert!(icon.pixels().any(|pixel| pixel[3] != 0));
+    }
+
+    #[test]
+    fn cli_retry_refreshes_after_oauth_401_and_succeeds() {
+        let mut fetches = 0;
+        let mut probes = 0;
+        let mut refreshes = 0;
+        let result = fetch_with_cli_refresh(
+            || {
+                fetches += 1;
+                if fetches == 1 {
+                    Err(anyhow!("aggregate failure"))
+                } else {
+                    Ok(active_data())
+                }
+            },
+            || {
+                probes += 1;
+                true
+            },
+            || {
+                refreshes += 1;
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!((fetches, probes, refreshes), (2, 1, 1));
+    }
+
+    #[test]
+    fn cli_retry_stops_after_two_refreshes() {
+        let mut fetches = 0;
+        let mut probes = 0;
+        let mut refreshes = 0;
+        let error = fetch_with_cli_refresh(
+            || {
+                fetches += 1;
+                Err(anyhow!("aggregate failure"))
+            },
+            || {
+                probes += 1;
+                true
+            },
+            || {
+                refreshes += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "aggregate failure");
+        assert_eq!((fetches, probes, refreshes), (3, 2, 2));
+    }
+
+    #[test]
+    fn non_401_does_not_invoke_cli_refresh() {
+        let mut probes = 0;
+        let mut refreshes = 0;
+        let error = fetch_with_cli_refresh(
+            || Err(anyhow!("network unavailable")),
+            || {
+                probes += 1;
+                false
+            },
+            || {
+                refreshes += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "network unavailable");
+        assert_eq!((probes, refreshes), (1, 0));
     }
 }

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_FAILURE_THRESHOLD: u32 = 5;
+
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -22,6 +24,8 @@ pub struct AppConfig {
     pub image_mode: Option<String>, // "append" (default) | "only-stats"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_retention: Option<usize>, // backup directories kept, default 5
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_threshold: Option<u32>, // consecutive failed cycles before a plugin error screen
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugins: Option<BTreeMap<String, PluginCfg>>, // [plugins.<name>] enabled = bool
 }
@@ -83,16 +87,17 @@ pub fn resolve_path(path_override: Option<&str>) -> PathBuf {
 /// TOML written when the config file does not exist yet: built-in defaults,
 /// optional keys commented out, every known plugin enabled.
 fn default_config_toml() -> String {
-    let mut out = String::from(
-        "# geekmagic-custom-monitors configuration\n\
-         # host = \"192.168.1.201\"   # GeekMagic device IP\n\
-         # model = \"auto\"           # auto | ultra | pro\n\
-         # interval = 300            # daemon seconds; omit for one-shot\n\
-         # parallel_render = false\n\
-         # autoplay_interval = 10    # device slideshow seconds\n\
-         # image_mode = \"append\"  # append | only-stats\n\
-         backup_retention = 5      # backup directories kept\n",
-    );
+    let mut out = String::from(concat!(
+        "# geekmagic-custom-monitors configuration\n",
+        "# host = \"192.168.1.201\"   # GeekMagic device IP\n",
+        "# model = \"auto\"           # auto | ultra | pro\n",
+        "# interval = 300            # daemon seconds; omit for one-shot\n",
+        "# parallel_render = false\n",
+        "# autoplay_interval = 10    # device slideshow seconds\n",
+        "# image_mode = \"append\"  # append | only-stats\n",
+        "backup_retention = 5      # backup directories kept\n",
+        "# failure_threshold = 5  # failed cycles before a plugin shows an error screen\n",
+    ));
     for name in crate::plugins::ui_plugin_names() {
         out.push_str(&format!("\n[plugins.{name}]\nenabled = true\n"));
     }

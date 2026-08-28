@@ -8,7 +8,7 @@ anyhow = "1.0"
 image = "0.25"
 imageproc = "0.26"
 ab_glyph = "0.2"
-reqwest = { version = "0.13", features = ["blocking", "multipart"] }
+reqwest = { version = "0.13", features = ["blocking", "form", "multipart"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sysinfo = "0.36"
@@ -19,6 +19,7 @@ toml = "1"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [[bin]]
 name = "geekmagic-monitors"

@@ -6,7 +6,7 @@ pub fn run() -> Result<()> {
     let executable = std::env::current_exe().context("failed to resolve current executable")?;
     let config_root = crate::config::config_root()?;
 
-    if let Err(error) = crate::autostart::boot(false) {
+    if let Err(error) = crate::daemon::disable() {
         eprintln!("warning: failed to disable automatic startup: {error:#}");
     }
 

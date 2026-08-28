@@ -1,13 +1,15 @@
-mod autostart;
+mod daemon;
 mod config;
 mod device;
 mod plugin;
 mod plugins;
 mod render;
 mod setup;
+mod status;
 mod upload;
 mod uninstall;
 
+use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
@@ -64,22 +66,26 @@ enum Command {
         config: Option<String>,
     },
 
-    /// Manage auto-start at login (macOS launchd, Linux systemd user, Windows Run key)
-    Boot {
+    /// Manage the background daemon (auto-start at login, status, restart)
+    Daemon {
         #[command(subcommand)]
-        action: BootAction,
+        action: DaemonAction,
     },
 
-    /// Disable auto-start and remove this binary, configuration, and backups
+    /// Disable the daemon and remove this binary, configuration, and backups
     Uninstall,
 }
 
 #[derive(Subcommand)]
-enum BootAction {
-    /// Install and enable auto-start
+enum DaemonAction {
+    /// Install and enable auto-start at login
     Enable,
     /// Disable and remove auto-start
     Disable,
+    /// Show service state and the last cycle's outcome
+    Status,
+    /// Restart the running daemon
+    Restart,
 }
 
 struct RuntimeArgs {
@@ -91,14 +97,74 @@ struct RuntimeArgs {
     image_mode: upload::ImageMode,
     backup_retention: usize,
     model: Option<String>,
+    failure_threshold: u32,
 }
 
 fn now() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
+
+fn record_outcome(
+    failures: &mut HashMap<&'static str, u32>,
+    plugin: &dyn UiPlugin,
+    result: Result<(&'static str, RgbaImage)>,
+    threshold: u32,
+    report: &mut CycleReport,
+) -> Option<(&'static str, RgbaImage)> {
+    match result {
+        Ok(screen) => {
+            failures.remove(plugin.name());
+            report.succeeded.push(plugin.name().to_string());
+            Some(screen)
+        }
+        Err(error) => {
+            report.failed.push(status::PluginFailure {
+                plugin: plugin.name().to_string(),
+                error: format!("{error:#}"),
+            });
+            let count = {
+                let count = failures.entry(plugin.name()).or_insert(0);
+                *count = (*count).saturating_add(1);
+                *count
+            };
+            eprintln!(
+                "[{}] plugin '{}' failed ({count}/{threshold}): {error:#}",
+                now(),
+                plugin.name()
+            );
+            if count < threshold {
+                return None;
+            }
+            if count == threshold {
+                eprintln!(
+                    "[{}] plugin '{}': circuit breaker on, showing error screen",
+                    now(),
+                    plugin.name()
+                );
+            }
+            Some((
+                plugin.filename(),
+                crate::render::error::render_plugin_error(plugin.name(), count),
+            ))
+        }
+    }
+}
+
+#[derive(Default)]
+struct CycleReport {
+    screens: Vec<(&'static str, RgbaImage)>,
+    succeeded: Vec<String>,
+    failed: Vec<status::PluginFailure>,
+}
+
 /// One collect+render pass over the plugin list; failures are per-plugin.
-fn collect_render(plugins: &mut [Box<dyn UiPlugin>], parallel: bool) -> Vec<(&'static str, RgbaImage)> {
+fn collect_render(
+    plugins: &mut [Box<dyn UiPlugin>],
+    parallel: bool,
+    failures: &mut HashMap<&'static str, u32>,
+    threshold: u32,
+) -> CycleReport {
     let run_one = |p: &mut Box<dyn UiPlugin>| -> Result<(&'static str, RgbaImage)> {
         p.collect()?;
         let img = p.render()?;
@@ -120,21 +186,23 @@ fn collect_render(plugins: &mut [Box<dyn UiPlugin>], parallel: bool) -> Vec<(&'s
         plugins.iter_mut().map(|p| run_one(p)).collect()
     };
 
-    let mut screens = Vec::new();
+    let mut report = CycleReport::default();
     for (plugin, result) in plugins.iter().zip(results) {
-        match result {
-            Ok(screen) => screens.push(screen),
-            Err(e) => eprintln!("[{}] plugin '{}' failed: {e:#}", now(), plugin.name()),
+        if let Some(screen) = record_outcome(failures, &**plugin, result, threshold, &mut report) {
+            report.screens.push(screen);
         }
     }
-    screens
+    report
 }
 
 fn run_cycle(
     plugins: &mut [Box<dyn UiPlugin>],
     args: &RuntimeArgs,
     device: &mut Option<device::DeviceInfo>,
+    failures: &mut HashMap<&'static str, u32>,
+    status: &mut status::DaemonStatus,
 ) -> Result<()> {
+    status.last_cycle_at = Some(chrono::Local::now().to_rfc3339());
     // Re-probe when detection has not succeeded yet (device may have booted
     // after the daemon started).
     if let (Some(host), Some(d)) = (&args.host, device.as_mut()) {
@@ -145,9 +213,14 @@ fn run_cycle(
         }
     }
 
-    let screens = collect_render(plugins, args.parallel);
+    let report = collect_render(plugins, args.parallel, failures, args.failure_threshold);
+    let screens = report.screens;
+    status.succeeded = report.succeeded;
+    status.failed = report.failed;
+    status.device = Some(device_label(device));
     if screens.is_empty() {
         eprintln!("[{}] all plugins failed; skipping upload this cycle", now());
+        status.upload = Some("skipped: all plugins failed".to_string());
         return Ok(());
     }
 
@@ -159,12 +232,17 @@ fn run_cycle(
             img.save(&path)?;
             println!("[{}] saved {path}", now());
         }
+        status.upload = Some(format!("saved {} screen(s) to {dir}", screens.len()));
     } else {
         let host = args.host.as_ref().expect("host checked at startup");
         let album_theme = device.as_ref().map(|d| d.album_theme).unwrap_or(3);
         let refs: Vec<(&str, &RgbaImage)> =
             screens.iter().map(|(f, i)| (*f, i)).collect();
-        upload::upload_screens(host, album_theme, args.autoplay_interval, &refs)?;
+        if let Err(e) = upload::upload_screens(host, album_theme, args.autoplay_interval, &refs) {
+            status.upload = Some(format!("failed: {e:#}"));
+            return Err(e);
+        }
+        status.upload = Some(format!("pushed {} screen(s) to {host}", screens.len()));
         println!("[{}] pushed {} screen(s) to {host}", now(), screens.len());
     }
     Ok(())
@@ -180,6 +258,16 @@ fn log_device(d: &device::DeviceInfo) {
     }
 }
 
+fn device_label(device: &Option<device::DeviceInfo>) -> String {
+    match device {
+        Some(d) => d
+            .firmware
+            .clone()
+            .unwrap_or_else(|| "detection failed (will retry)".to_string()),
+        None => "not used (output-dir)".to_string(),
+    }
+}
+
 fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
     if args.host.is_none() && args.output_dir.is_none() {
         return Err(anyhow!("missing host; pass --host or set host in config"));
@@ -191,6 +279,14 @@ fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
     }
     let names: Vec<&str> = plugins.iter().map(|p| p.name()).collect();
     println!("enabled plugins: {}", names.join(", "));
+
+    let mut status = status::DaemonStatus {
+        pid: std::process::id(),
+        started_at: chrono::Local::now().to_rfc3339(),
+        interval_secs: args.interval,
+        plugins: names.iter().map(|n| n.to_string()).collect(),
+        ..Default::default()
+    };
 
     let mut device = if args.output_dir.is_none() {
         let host = args.host.as_ref().expect("host checked above");
@@ -209,19 +305,32 @@ fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
         None
     };
 
+    let mut failures = HashMap::new();
     if let Some(interval) = args.interval {
         let interval = interval.max(10);
         if let Some(host) = &args.host {
             println!("Daemon mode: pushing every {interval}s to {host}");
         }
         loop {
-            if let Err(e) = run_cycle(&mut plugins, &args, &mut device) {
-                eprintln!("[{}] Error: {e:#}", now());
+            let result = run_cycle(&mut plugins, &args, &mut device, &mut failures, &mut status);
+            match result {
+                Ok(()) => status.cycle_error = None,
+                Err(error) => {
+                    status.cycle_error = Some(format!("{error:#}"));
+                    eprintln!("[{}] Error: {error:#}", now());
+                }
             }
+            status::write(&status);
             thread::sleep(Duration::from_secs(interval));
         }
     } else {
-        run_cycle(&mut plugins, &args, &mut device)
+        let result = run_cycle(&mut plugins, &args, &mut device, &mut failures, &mut status);
+        match &result {
+            Ok(()) => status.cycle_error = None,
+            Err(error) => status.cycle_error = Some(format!("{error:#}")),
+        }
+        status::write(&status);
+        result
     }
 }
 
@@ -262,6 +371,17 @@ fn main() -> Result<()> {
                 Some(retention) => retention,
                 None => 5,
             };
+            let failure_threshold = match cfg.failure_threshold {
+                Some(0) => {
+                    eprintln!(
+                        "failure_threshold must be at least 1, falling back to {}",
+                        config::DEFAULT_FAILURE_THRESHOLD
+                    );
+                    config::DEFAULT_FAILURE_THRESHOLD
+                }
+                Some(threshold) => threshold,
+                None => config::DEFAULT_FAILURE_THRESHOLD,
+            };
             let args = RuntimeArgs {
                 host: host.or(cfg.host.clone()),
                 interval: if once { None } else { daemon.or(cfg.interval) },
@@ -271,11 +391,80 @@ fn main() -> Result<()> {
                 image_mode,
                 backup_retention,
                 model: cfg.model.clone(),
+                failure_threshold,
             };
             run(args, cfg)
         }
         Command::Setup { config } => setup::run(config.as_deref()),
-        Command::Boot { action } => autostart::boot(matches!(action, BootAction::Enable)),
+        Command::Daemon { action } => match action {
+            DaemonAction::Enable => daemon::enable(),
+            DaemonAction::Disable => daemon::disable(),
+            DaemonAction::Status => daemon::status(),
+            DaemonAction::Restart => daemon::restart(),
+        },
         Command::Uninstall => uninstall::run(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::{Plugin, PluginKind};
+
+    struct Stub;
+
+    impl Plugin for Stub {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+
+        fn get_plugin_kind(&self) -> PluginKind {
+            PluginKind::Ui
+        }
+    }
+
+    impl UiPlugin for Stub {
+        fn filename(&self) -> &'static str {
+            "stub.jpg"
+        }
+
+        fn collect(&mut self) -> Result<()> {
+            unreachable!("record_outcome does not collect")
+        }
+
+        fn render(&self) -> Result<RgbaImage> {
+            unreachable!("record_outcome does not render")
+        }
+    }
+
+    #[test]
+    fn circuit_breaker_shows_error_screen_at_threshold_and_recovers() {
+        let plugin = Stub;
+        let mut failures = HashMap::new();
+        let mut report = CycleReport::default();
+        for _ in 0..4 {
+            assert!(
+                record_outcome(&mut failures, &plugin, Err(anyhow!("failed")), 5, &mut report)
+                    .is_none()
+            );
+        }
+        let (_, image) =
+            record_outcome(&mut failures, &plugin, Err(anyhow!("failed")), 5, &mut report)
+                .expect("threshold failure must render an error screen");
+        assert_eq!(image.dimensions(), (240, 240));
+        assert_eq!(failures["stub"], 5);
+        assert!(
+            record_outcome(&mut failures, &plugin, Err(anyhow!("failed")), 5, &mut report)
+                .is_some()
+        );
+        assert_eq!(failures["stub"], 6);
+        let screen = RgbaImage::new(240, 240);
+        assert!(
+            record_outcome(&mut failures, &plugin, Ok(("stub.jpg", screen)), 5, &mut report)
+                .is_some()
+        );
+        assert!(!failures.contains_key("stub"));
+        assert_eq!(report.failed.len(), 6);
+        assert_eq!(report.succeeded, ["stub"]);
     }
 }

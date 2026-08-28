@@ -5,8 +5,12 @@ parallel_render = true
 autoplay_interval = 10
 image_mode = "append"    # append | only-stats (only-stats deletes non-app images, with local backup)
 backup_retention = 5   # number of backup directories kept
+failure_threshold = 5 # consecutive failed cycles before a plugin screen is replaced by an error screen
 
 [plugins.claude]
+enabled = true
+
+[plugins.codex]
 enabled = true
 
 [plugins.disk]

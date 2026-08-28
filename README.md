@@ -6,7 +6,7 @@ Based on [geekmagic-stats](https://github.com/jimmystridh/geekmagic-stats).
 
 ## Features
 
-- Built-in plugins for Claude Code usage, Kimi Code plan quota, and local disk usage.
+- Built-in plugins for Claude Code usage, Codex ChatGPT-plan quota, Kimi Code plan quota, and local disk usage.
 - Automatic SmallTV Ultra and SmallTV Pro detection.
 - One-shot or periodic execution.
 - Optional parallel rendering.
@@ -20,6 +20,7 @@ Based on [geekmagic-stats](https://github.com/jimmystridh/geekmagic-stats).
 
 - Rust with Cargo.
 - A GeekMagic SmallTV reachable on the local network.
+- The Codex screen requires the official [Codex CLI](https://developers.openai.com/codex/) and ChatGPT login via `codex login`; API-key login does not expose subscription quotas. The binary is searched on `PATH`, `~/.local/bin/codex`, `/opt/homebrew/bin/codex`, and `/usr/local/bin/codex`; set `CODEX_BINARY` to use an explicit path.
 
 ## Installation
 
@@ -65,8 +66,12 @@ parallel_render = false
 autoplay_interval = 10
 image_mode = "append"           # append | only-stats
 backup_retention = 5            # number of backup directories to keep
+failure_threshold = 5            # consecutive failed cycles before an error screen
 
 [plugins.claude]
+enabled = true
+
+[plugins.codex]
 enabled = true
 
 [plugins.disk]
@@ -84,6 +89,8 @@ Backups created by `only-stats` are stored in:
 ```
 
 A device file is deleted only after its local backup has been saved successfully. Cleanup and backup happen once during process startup; later update cycles only render and upload screens. If there is no file that can be saved, no empty backup directory remains or counts toward retention. `backup_retention` must be at least `1`.
+
+`failure_threshold` is process-local and defaults to `5`. A plugin is omitted while its consecutive collect/render failures remain below the threshold; at and above it, the app uploads a native error screen under that plugin's filename while continuing to collect it every cycle. The first successful collect+render resets the count. Set `failure_threshold = 1` to emit the error screen for a failing one-shot run.
 
 ## Process flow
 
@@ -147,21 +154,24 @@ A device file is deleted only after its local backup has been saved successfully
 +----------------------------------------------------------------+
 |           src/plugins/mod.rs - catalog and registry            |
 +----------------------------------------------------------------+
-         v----------------------v----------------------v
-+------------------+   +------------------+   +------------------+
-|  claude/mod.rs   |   |   kimi/mod.rs    |   |   disk/mod.rs    |
-|   collect + Ui   |   |   collect + Ui   |   |   collect + Ui   |
-+------------------+   +------------------+   +------------------+
-         |                      |                      v
-         +---------uses---------+             +------------------+
-                    v                         |  disk/render.rs  |
-+-------------------------------------+       | render disk.jpg  |
-|    plugins/agents_usage_ui/mod.rs   |       +------------------+
-|  renderer: claude.jpg and kimi.jpg  |                |
-+-------------------------------------+                |
-                    v                                  |
-+-------------------------------------+                |
-|  src/render/common.rs - primitives  |<-----uses------+
+         v----------------------v----------------------v----------------------v
++------------------+   +------------------+   +------------------+   +------------------+
+|  claude/mod.rs   |   |   codex/mod.rs   |   |   kimi/mod.rs    |   |    disk/mod.rs   |
+|   collect + Ui   |   |   collect + Ui   |   |   collect + Ui   |   |   collect + Ui   |
++------------------+   +------------------+   +------------------+   +------------------+
+         |                      |                      |                      v
+         +----------------------+---------uses---------+           +------------------+
+                                |                                  |  disk/render.rs  |
+                                v                                  | render disk.jpg  |
++-------------------------------------+                            +------------------+
+|    plugins/agents_usage_ui/mod.rs   |                                      |
+| renderer: claude.jpg, codex.jpg and |                                      |
+|             kimi.jpg                |                                      |
++-------------------------------------+                                      |
+                    |                                                        |
+                    v                                                        |
++-------------------------------------+                                      |
+|  src/render/common.rs - primitives  |<----------------uses-----------------+
 +-------------------------------------+
 ```
 
@@ -201,7 +211,7 @@ pub trait UiPlugin: Plugin {
 
 Plugin instances are created once by `plugins::registry()` and reused for the entire process lifetime. Each cycle calls `collect()` and then `render()`. A plugin failure skips only that plugin's screen for the current cycle; other plugins continue.
 
-A plugin keeps its collector next to the renderer it owns. Drawing code shared by several screens becomes a `Renderer` plugin of its own — `agents-usage-ui` draws the usage bars for both Claude Code and Kimi Code. `src/render/common.rs` contains only genuinely shared primitives such as text, colors, and shapes. Renderer modules remain available at compile time even when their corresponding plugins are disabled in configuration.
+A plugin keeps its collector next to the renderer it owns. Drawing code shared by several screens becomes a `Renderer` plugin of its own — `agents-usage-ui` draws the usage bars for Claude Code, Codex, and Kimi Code. `src/render/common.rs` contains only genuinely shared primitives such as text, colors, and shapes. Renderer modules remain available at compile time even when their corresponding plugins are disabled in configuration.
 
 ### Adding a plugin
 
@@ -251,19 +261,33 @@ geekmagic-monitors run --parallel --once
 geekmagic-monitors run --no-parallel --once
 ```
 
-## Automatic startup
+## Daemon
 
-Install and enable the operating system integration:
+Install and enable the operating system integration (auto-start at login):
 
 ```sh
-geekmagic-monitors boot enable
+geekmagic-monitors daemon enable
 ```
 
 Disable and remove it:
 
 ```sh
-geekmagic-monitors boot disable
+geekmagic-monitors daemon disable
 ```
+
+Show the service state plus the last cycle's outcome — which plugins succeeded, which failed and why, and the upload result:
+
+```sh
+geekmagic-monitors daemon status
+```
+
+Restart the background process:
+
+```sh
+geekmagic-monitors daemon restart
+```
+
+The outcome shown by `daemon status` is written by every run to `~/.config/geekmagic-custom-monitors/status.json`.
 
 ## Uninstall
 
@@ -281,4 +305,4 @@ The root data directory is:
 ~/.config/geekmagic-custom-monitors/
 ```
 
-It holds the default configuration and every image backup. `boot disable` never removes it; only `uninstall` does.
+It holds the default configuration and every image backup. `daemon disable` never removes it; only `uninstall` does.
