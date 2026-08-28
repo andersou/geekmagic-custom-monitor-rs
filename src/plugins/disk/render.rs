@@ -8,9 +8,7 @@ use anyhow::Result;
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 
-use crate::render::common::{
-    self, BG, H, SEPARATOR, TEXT_DIM, TEXT_MUTED, TEXT_PRIMARY, W,
-};
+use crate::render::common::{self, BG, H, SEPARATOR, TEXT_DIM, TEXT_MUTED, TEXT_PRIMARY, W};
 
 const PIE_USED: Rgba<u8> = Rgba([99, 102, 241, 255]);
 const PIE_USED_2: Rgba<u8> = Rgba([139, 92, 246, 255]);
@@ -18,11 +16,7 @@ const PIE_FREE: Rgba<u8> = Rgba([34, 197, 94, 255]);
 const PIE_FREE_2: Rgba<u8> = Rgba([16, 185, 129, 255]);
 const PIE_BG: Rgba<u8> = Rgba([30, 30, 40, 255]);
 
-pub fn render_donut(
-    free_percent: f64,
-    used_label: &str,
-    free_label: &str,
-) -> Result<RgbaImage> {
+pub fn render_donut(free_percent: f64, used_label: &str, free_label: &str) -> Result<RgbaImage> {
     let font = common::font_regular();
     let font_bold = common::font_bold();
     let mut img = RgbaImage::from_pixel(W, H, BG);

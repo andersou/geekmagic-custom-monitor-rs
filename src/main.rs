@@ -1,19 +1,19 @@
-mod daemon;
 mod config;
+mod daemon;
 mod device;
 mod plugin;
 mod plugins;
 mod render;
 mod setup;
 mod status;
-mod upload;
 mod uninstall;
+mod upload;
 
 use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use image::RgbaImage;
 
@@ -21,7 +21,11 @@ use crate::device::Model;
 use crate::plugin::UiPlugin;
 
 #[derive(Parser)]
-#[command(about = "Push extensible monitor screens to a GeekMagic display")]
+#[command(
+    name = "geekmagic-monitors",
+    version,
+    about = "Push extensible monitor screens to a GeekMagic display"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Command,
@@ -104,7 +108,6 @@ fn now() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
-
 fn record_outcome(
     failures: &mut HashMap<&'static str, u32>,
     plugin: &dyn UiPlugin,
@@ -183,7 +186,7 @@ fn collect_render(
                 .collect()
         })
     } else {
-        plugins.iter_mut().map(|p| run_one(p)).collect()
+        plugins.iter_mut().map(run_one).collect()
     };
 
     let mut report = CycleReport::default();
@@ -205,12 +208,12 @@ fn run_cycle(
     status.last_cycle_at = Some(chrono::Local::now().to_rfc3339());
     // Re-probe when detection has not succeeded yet (device may have booted
     // after the daemon started).
-    if let (Some(host), Some(d)) = (&args.host, device.as_mut()) {
-        if d.model == Model::Unknown {
-            let client = upload::make_client()?;
-            *d = device::detect(&client, &format!("http://{host}"), args.model.as_deref());
-            log_device(d);
-        }
+    if let (Some(host), Some(d)) = (&args.host, device.as_mut())
+        && d.model == Model::Unknown
+    {
+        let client = upload::make_client()?;
+        *d = device::detect(&client, &format!("http://{host}"), args.model.as_deref());
+        log_device(d);
     }
 
     let report = collect_render(plugins, args.parallel, failures, args.failure_threshold);
@@ -236,8 +239,7 @@ fn run_cycle(
     } else {
         let host = args.host.as_ref().expect("host checked at startup");
         let album_theme = device.as_ref().map(|d| d.album_theme).unwrap_or(3);
-        let refs: Vec<(&str, &RgbaImage)> =
-            screens.iter().map(|(f, i)| (*f, i)).collect();
+        let refs: Vec<(&str, &RgbaImage)> = screens.iter().map(|(f, i)| (*f, i)).collect();
         if let Err(e) = upload::upload_screens(host, album_theme, args.autoplay_interval, &refs) {
             status.upload = Some(format!("failed: {e:#}"));
             return Err(e);
@@ -438,30 +440,64 @@ mod tests {
     }
 
     #[test]
+    fn version_output_matches_package_version() {
+        let Err(error) = Cli::try_parse_from(["geekmagic-monitors", "--version"]) else {
+            panic!("--version must request Clap's version display");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string(),
+            format!("geekmagic-monitors {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+    #[test]
     fn circuit_breaker_shows_error_screen_at_threshold_and_recovers() {
         let plugin = Stub;
         let mut failures = HashMap::new();
         let mut report = CycleReport::default();
         for _ in 0..4 {
             assert!(
-                record_outcome(&mut failures, &plugin, Err(anyhow!("failed")), 5, &mut report)
-                    .is_none()
+                record_outcome(
+                    &mut failures,
+                    &plugin,
+                    Err(anyhow!("failed")),
+                    5,
+                    &mut report
+                )
+                .is_none()
             );
         }
-        let (_, image) =
-            record_outcome(&mut failures, &plugin, Err(anyhow!("failed")), 5, &mut report)
-                .expect("threshold failure must render an error screen");
+        let (_, image) = record_outcome(
+            &mut failures,
+            &plugin,
+            Err(anyhow!("failed")),
+            5,
+            &mut report,
+        )
+        .expect("threshold failure must render an error screen");
         assert_eq!(image.dimensions(), (240, 240));
         assert_eq!(failures["stub"], 5);
         assert!(
-            record_outcome(&mut failures, &plugin, Err(anyhow!("failed")), 5, &mut report)
-                .is_some()
+            record_outcome(
+                &mut failures,
+                &plugin,
+                Err(anyhow!("failed")),
+                5,
+                &mut report
+            )
+            .is_some()
         );
         assert_eq!(failures["stub"], 6);
         let screen = RgbaImage::new(240, 240);
         assert!(
-            record_outcome(&mut failures, &plugin, Ok(("stub.jpg", screen)), 5, &mut report)
-                .is_some()
+            record_outcome(
+                &mut failures,
+                &plugin,
+                Ok(("stub.jpg", screen)),
+                5,
+                &mut report
+            )
+            .is_some()
         );
         assert!(!failures.contains_key("stub"));
         assert_eq!(report.failed.len(), 6);

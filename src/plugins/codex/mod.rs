@@ -198,19 +198,16 @@ impl CodexRpc {
     }
 
     fn fetch_rate_limits(&mut self) -> Result<RateLimitSnapshot> {
-        let result: RateLimitsResult = match self.request(
-            "account/rateLimits/read",
-            json!({}),
-            REQUEST_TIMEOUT,
-        ) {
-            Ok(result) => result,
-            Err(error) if error.to_string().contains("-32601") => {
-                return Err(error.context(
-                    "this Codex CLI does not expose account/rateLimits/read; update Codex",
-                ));
-            }
-            Err(error) => return Err(error),
-        };
+        let result: RateLimitsResult =
+            match self.request("account/rateLimits/read", json!({}), REQUEST_TIMEOUT) {
+                Ok(result) => result,
+                Err(error) if error.to_string().contains("-32601") => {
+                    return Err(error.context(
+                        "this Codex CLI does not expose account/rateLimits/read; update Codex",
+                    ));
+                }
+                Err(error) => return Err(error),
+            };
         Ok(select_snapshot(result))
     }
 }
@@ -687,6 +684,9 @@ mod tests {
         let error = await_result(&messages, 1, "initialize", Duration::from_millis(50))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("closed its output"), "unhelpful error: {error}");
+        assert!(
+            error.contains("closed its output"),
+            "unhelpful error: {error}"
+        );
     }
 }

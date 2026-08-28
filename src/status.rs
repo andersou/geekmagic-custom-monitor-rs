@@ -16,14 +16,14 @@ pub struct PluginFailure {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub pid: u32,
-    pub started_at: String, // RFC 3339, local time
+    pub started_at: String,         // RFC 3339, local time
     pub interval_secs: Option<u64>, // None = one-shot run
     pub plugins: Vec<String>,       // enabled plugin names
     pub device: Option<String>,     // firmware string or detection note
     pub last_cycle_at: Option<String>,
-    pub succeeded: Vec<String>,     // plugin names that produced a real screen
+    pub succeeded: Vec<String>, // plugin names that produced a real screen
     pub failed: Vec<PluginFailure>, // plugin name + "{error:#}"
-    pub upload: Option<String>,     // "pushed N screen(s) to HOST" | "saved N screen(s) to DIR" | "skipped: all plugins failed" | "failed: ..."
+    pub upload: Option<String>, // "pushed N screen(s) to HOST" | "saved N screen(s) to DIR" | "skipped: all plugins failed" | "failed: ..."
     pub cycle_error: Option<String>, // top-level run_cycle error, "{e:#}"
 }
 

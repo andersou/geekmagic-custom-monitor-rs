@@ -4,9 +4,7 @@ use ab_glyph::PxScale;
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 
-use crate::render::common::{
-    self, BG, H, PANEL_BG, SEPARATOR, TEXT_MUTED, TEXT_PRIMARY, W,
-};
+use crate::render::common::{self, BG, H, PANEL_BG, SEPARATOR, TEXT_MUTED, TEXT_PRIMARY, W};
 
 const DANGER: Rgba<u8> = Rgba([239, 68, 68, 255]);
 
@@ -67,9 +65,14 @@ mod tests {
         let image = render_plugin_error("kimi", 2);
         assert_eq!(image.dimensions(), (W, H));
         let changed = image.pixels().filter(|pixel| **pixel != BG).count();
-        assert!(changed >= 500, "screen is unexpectedly sparse: {changed} changed pixels");
         assert!(
-            (12..228).flat_map(|x| (64..196).map(move |y| (x, y))).any(|(x, y)| image.get_pixel(x, y) == &DANGER),
+            changed >= 500,
+            "screen is unexpectedly sparse: {changed} changed pixels"
+        );
+        assert!(
+            (12..228)
+                .flat_map(|x| (64..196).map(move |y| (x, y)))
+                .any(|(x, y)| image.get_pixel(x, y) == &DANGER),
             "panel contains no danger-colored text"
         );
     }

@@ -1,0 +1,239 @@
+name: CI and release
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.98.0
+          components: rustfmt, clippy
+      - uses: j178/prek-action@4e14d07f9231acabce116ccfca13b13dd9755ece # v3.0.0
+        with:
+          prek-version: "0.5.0"
+          args: run --all-files
+      - name: Run pre-push tests
+        run: prek run cargo-test --hook-stage pre-push --all-files
+
+  metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.98.0
+      - id: source
+        name: Read immutable source metadata
+        shell: bash
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+          echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')" >> "$GITHUB_OUTPUT"
+
+  release-plan:
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && (github.ref_name == 'main' || github.ref_name == 'develop') }}
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+      channel: ${{ steps.plan.outputs.channel }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          cache: npm
+      - name: Install npm
+        run: npm install --global npm@11.9.0
+      - name: Install release dependencies
+        run: npm ci --ignore-scripts
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.98.0
+      - name: Install cargo-edit
+        run: cargo install cargo-edit --version 0.13.13 --locked
+      - id: plan
+        name: Calculate release version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run release:dry-run
+      - name: Prepare release manifest
+        if: ${{ steps.plan.outputs.publish == 'true' }}
+        run: |
+          cargo set-version "${{ steps.plan.outputs.version }}"
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+      - name: Upload release manifest
+        if: ${{ steps.plan.outputs.publish == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-manifest
+          path: |
+            Cargo.toml
+            Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: [quality, metadata, release-plan]
+    if: ${{ always() && needs.quality.result == 'success' && needs.metadata.result == 'success' && (needs.release-plan.result == 'success' || needs.release-plan.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            extension: ""
+            archive: tar.gz
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            extension: .exe
+            archive: zip
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            extension: ""
+            archive: tar.gz
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            extension: ""
+            archive: tar.gz
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+      - name: Download planned manifest
+        if: ${{ needs.release-plan.outputs.publish == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-manifest
+          path: .
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.98.0
+          target: ${{ matrix.target }}
+      - name: Install Linux build dependencies
+        if: ${{ matrix.runner == 'ubuntu-24.04' }}
+        run: sudo apt-get update && sudo apt-get install --yes build-essential cmake pkg-config libsqlite3-dev
+      - name: Test, build, and package
+        shell: bash
+        env:
+          VERSION: ${{ needs.release-plan.outputs.publish == 'true' && needs.release-plan.outputs.version || needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo test --workspace --all-targets --all-features --locked --target "${{ matrix.target }}"
+          cargo build --release --locked --target "${{ matrix.target }}"
+          binary="geekmagic-monitors${{ matrix.extension }}"
+          binary_path="target/${{ matrix.target }}/release/${binary}"
+          test -f "$binary_path"
+          test "$("$binary_path" --version)" = "geekmagic-monitors $VERSION"
+          archive="geekmagic-monitors-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
+          mkdir -p dist
+          if [ "${{ matrix.archive }}" = zip ]; then
+            archive_path="$(pwd)/dist/$archive"
+            (cd "$(dirname "$binary_path")" && 7z a "$archive_path" "$binary")
+          else
+            tar -czf "dist/$archive" -C "$(dirname "$binary_path")" "$binary"
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest=$(sha256sum "dist/$archive" | cut -d ' ' -f1)
+          else
+            digest=$(shasum -a 256 "dist/$archive" | cut -d ' ' -f1)
+          fi
+          printf '%s  %s\n' "$digest" "$archive" > "dist/$archive.sha256"
+          test -f "dist/$archive"
+          test -f "dist/$archive.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    if: ${{ needs.release-plan.outputs.publish == 'true' }}
+    needs: [metadata, release-plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Confirm branch head is unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_head=$(git ls-remote origin "refs/heads/${GITHUB_REF_NAME}" | cut -f1)
+          test "$remote_head" = "${{ needs.metadata.outputs.sha }}"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          cache: npm
+      - name: Install npm
+        run: npm install --global npm@11.9.0
+      - name: Install release dependencies
+        run: npm ci --ignore-scripts
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.98.0
+      - name: Install cargo-edit
+        run: cargo install cargo-edit --version 0.13.13 --locked
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          archives=(dist/*.tar.gz dist/*.zip)
+          test "${#archives[@]}" -eq 4
+          sidecars=(dist/*.sha256)
+          test "${#sidecars[@]}" -eq 4
+          LC_ALL=C sort "${sidecars[@]}" > dist/SHA256SUMS
+          (cd dist && shasum -a 256 -c SHA256SUMS)
+      - name: Publish release
+        env:
+          EXPECTED_VERSION: ${{ needs.release-plan.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: npm run release

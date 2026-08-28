@@ -74,7 +74,15 @@ pub fn is_inside_rounded(px: u32, py: u32, w: u32, h: u32, r: u32) -> bool {
     dx * dx + dy * dy <= r * r
 }
 
-pub fn draw_rounded_rect(img: &mut RgbaImage, x: i32, y: i32, w: u32, h: u32, r: u32, color: Rgba<u8>) {
+pub fn draw_rounded_rect(
+    img: &mut RgbaImage,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    r: u32,
+    color: Rgba<u8>,
+) {
     for px in 0..w {
         for py in 0..h {
             if is_inside_rounded(px, py, w, h, r) {
@@ -146,7 +154,11 @@ mod tests {
     #[test]
     fn rounded_corners_form_an_arc() {
         let (w, h, r) = (216u32, 60u32, 10u32);
-        let inset = |y: u32| (0..w).position(|x| is_inside_rounded(x, y, w, h, r)).unwrap() as u32;
+        let inset = |y: u32| {
+            (0..w)
+                .position(|x| is_inside_rounded(x, y, w, h, r))
+                .unwrap() as u32
+        };
 
         assert_eq!(inset(0), r, "top row spans only between the corner centers");
         assert!(inset(1) < inset(0), "corner did not start curving");
@@ -163,7 +175,10 @@ mod tests {
 
         // Symmetry: right side matches the left.
         for y in 0..r {
-            let right = (0..w).rev().position(|x| is_inside_rounded(x, y, w, h, r)).unwrap() as u32;
+            let right = (0..w)
+                .rev()
+                .position(|x| is_inside_rounded(x, y, w, h, r))
+                .unwrap() as u32;
             assert_eq!(right, inset(y), "asymmetric corner at row {y}");
         }
     }

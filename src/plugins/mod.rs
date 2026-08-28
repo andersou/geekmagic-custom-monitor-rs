@@ -72,7 +72,11 @@ pub fn registry(cfg: &AppConfig) -> Vec<Box<dyn UiPlugin>> {
         let mut dropped = false;
         let mut i = 0;
         while i < enabled.len() {
-            if let Some(dep) = enabled[i].depends_on().iter().find(|d| !names.contains(**d)) {
+            if let Some(dep) = enabled[i]
+                .depends_on()
+                .iter()
+                .find(|d| !names.contains(**d))
+            {
                 eprintln!(
                     "plugin '{}' disabled: depends on '{dep}', which is disabled or unknown",
                     enabled[i].name()
@@ -97,7 +101,10 @@ mod tests {
 
     #[test]
     fn default_config_enables_every_ui_plugin_and_no_renderer() {
-        let built: Vec<&str> = registry(&AppConfig::default()).iter().map(|p| p.name()).collect();
+        let built: Vec<&str> = registry(&AppConfig::default())
+            .iter()
+            .map(|p| p.name())
+            .collect();
         assert_eq!(built, ui_plugin_names());
         assert!(built.contains(&"codex"));
         assert!(!built.contains(&"agents-usage-ui"));

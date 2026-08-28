@@ -58,10 +58,10 @@ fn expand_home(path: &str) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from(path));
     }
 
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = env::var("HOME")
+    {
+        return PathBuf::from(home).join(rest);
     }
 
     PathBuf::from(path)
@@ -81,7 +81,9 @@ pub fn default_config_path() -> PathBuf {
 }
 
 pub fn resolve_path(path_override: Option<&str>) -> PathBuf {
-    path_override.map(expand_home).unwrap_or_else(default_config_path)
+    path_override
+        .map(expand_home)
+        .unwrap_or_else(default_config_path)
 }
 
 /// TOML written when the config file does not exist yet: built-in defaults,

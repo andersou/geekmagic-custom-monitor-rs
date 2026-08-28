@@ -306,3 +306,25 @@ The root data directory is:
 ```
 
 It holds the default configuration and every image backup. `daemon disable` never removes it; only `uninstall` does.
+
+## Development and releases
+
+The pinned Rust and Node runtimes are declared in `.vfox.toml`. Install them, then install the Rust standard-library sources used by OMP's `rust-analyzer`:
+
+```sh
+vfox install --all
+sh scripts/install-rust-src
+```
+
+Install the pinned hook manager and all three Git hook types:
+
+```sh
+sh scripts/vfox-rust cargo install prek --version 0.5.0 --locked
+prek install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
+```
+
+Open OMP at the repository root; `.omp/lsp.json` launches the pinned Rust analyzer through `scripts/vfox-rust`. Hook definitions and CI checks live in `prek.toml` and `.github/workflows/ci-release.yml`.
+
+Use Conventional Commits. `main` publishes stable releases and `develop` publishes `beta` prereleases. `v0.1.0` is the initial baseline. After a stable release, merge `main` back into `develop` before further release-worthy commits.
+
+Each release publishes unsigned CLI archives for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`, plus `SHA256SUMS`. Sync both branches after a release commit before starting subsequent work.

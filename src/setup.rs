@@ -46,7 +46,10 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
 
     let host = prompt("device host/IP (empty = unset)", existing.host.as_deref())?;
 
-    let model = prompt("model (auto | ultra | pro)", Some(existing.model.as_deref().unwrap_or("auto")))?;
+    let model = prompt(
+        "model (auto | ultra | pro)",
+        Some(existing.model.as_deref().unwrap_or("auto")),
+    )?;
 
     let interval_default = existing.interval.map(|i| i.to_string());
     let interval = prompt(
@@ -60,7 +63,10 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
         Err(_) => anyhow::bail!("invalid interval '{interval}'"),
     };
 
-    let parallel = prompt_bool("parallel render?", existing.parallel_render.unwrap_or(false))?;
+    let parallel = prompt_bool(
+        "parallel render?",
+        existing.parallel_render.unwrap_or(false),
+    )?;
 
     let autoplay_default = existing.autoplay_interval.unwrap_or(10).to_string();
     let autoplay = prompt("device slideshow seconds", Some(&autoplay_default))?;
@@ -86,7 +92,10 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
         .failure_threshold
         .unwrap_or(config::DEFAULT_FAILURE_THRESHOLD)
         .to_string();
-    let failure_threshold = prompt("failed cycles before a plugin error screen", Some(&threshold_default))?;
+    let failure_threshold = prompt(
+        "failed cycles before a plugin error screen",
+        Some(&threshold_default),
+    )?;
     let failure_threshold: u32 = failure_threshold
         .parse()
         .with_context(|| format!("invalid failure threshold '{failure_threshold}'"))?;
@@ -94,15 +103,19 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
         anyhow::bail!("failure threshold must be at least 1");
     }
 
-
     let mut plugin_configs = std::collections::BTreeMap::new();
     for plugin in plugins::catalog() {
         if plugin.get_plugin_kind() != PluginKind::Ui {
             continue;
         }
         let name = plugin.name();
-        let existing_cfg = existing.plugins.as_ref().and_then(|plugins| plugins.get(name));
-        let default = existing_cfg.and_then(|plugin| plugin.enabled).unwrap_or(true);
+        let existing_cfg = existing
+            .plugins
+            .as_ref()
+            .and_then(|plugins| plugins.get(name));
+        let default = existing_cfg
+            .and_then(|plugin| plugin.enabled)
+            .unwrap_or(true);
         let enabled = prompt_bool(&format!("enable plugin '{name}'?"), default)?;
 
         // Only plugins that authenticate ask for a key; blank keeps the

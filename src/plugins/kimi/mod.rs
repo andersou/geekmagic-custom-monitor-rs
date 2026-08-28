@@ -122,7 +122,6 @@ struct OAuthHosts {
 #[derive(Debug)]
 struct CliCredentials {
     access_token: String,
-    refresh_token: Option<String>,
     expires_at: Option<i64>,
 }
 
@@ -153,7 +152,11 @@ fn kimi_home() -> Option<PathBuf> {
     env::var("KIMI_CODE_HOME")
         .ok()
         .map(PathBuf::from)
-        .or_else(|| env::var("HOME").ok().map(|home| PathBuf::from(home).join(".kimi-code")))
+        .or_else(|| {
+            env::var("HOME")
+                .ok()
+                .map(|home| PathBuf::from(home).join(".kimi-code"))
+        })
 }
 
 fn oauth_hosts(home: &Path) -> OAuthHosts {
@@ -180,7 +183,6 @@ fn cli_credentials(home: &Path) -> Option<CliCredentials> {
     #[derive(Deserialize)]
     struct RawCredentials {
         access_token: Option<String>,
-        refresh_token: Option<String>,
         expires_at: Option<i64>,
     }
 
@@ -199,10 +201,6 @@ fn cli_credentials(home: &Path) -> Option<CliCredentials> {
     });
     Some(CliCredentials {
         access_token,
-        refresh_token: credentials
-            .refresh_token
-            .map(|token| token.trim().to_string())
-            .filter(|token| !token.is_empty()),
         expires_at,
     })
 }
@@ -250,7 +248,10 @@ fn apply_refresh(credentials: &mut Value, body: &Value, now_epoch: i64) -> Resul
         .filter(|token| !token.is_empty())
         .context("Kimi credential refresh response has no access_token")?
         .to_string();
-    object.insert("access_token".to_string(), Value::String(access_token.clone()));
+    object.insert(
+        "access_token".to_string(),
+        Value::String(access_token.clone()),
+    );
 
     if let Some(refresh_token) = body
         .get("refresh_token")
@@ -264,20 +265,22 @@ fn apply_refresh(credentials: &mut Value, body: &Value, now_epoch: i64) -> Resul
         );
     }
 
-    if let Some(expires_in) = body.get("expires_in").and_then(Value::as_i64) {
-        if expires_in >= 0 {
-            let expires_at = now_epoch
-                .checked_add(expires_in)
-                .context("Kimi credential refresh expiry overflows epoch seconds")?;
-            object.insert("expires_in".to_string(), json!(expires_in));
-            object.insert("expires_at".to_string(), json!(expires_at));
-        }
+    if let Some(expires_in) = body.get("expires_in").and_then(Value::as_i64)
+        && expires_in >= 0
+    {
+        let expires_at = now_epoch
+            .checked_add(expires_in)
+            .context("Kimi credential refresh expiry overflows epoch seconds")?;
+        object.insert("expires_in".to_string(), json!(expires_in));
+        object.insert("expires_at".to_string(), json!(expires_at));
     }
     Ok(access_token)
 }
 
 fn create_temp_file(path: &Path) -> Result<(PathBuf, File)> {
-    let parent = path.parent().context("Kimi CLI credential has no parent directory")?;
+    let parent = path
+        .parent()
+        .context("Kimi CLI credential has no parent directory")?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -296,7 +299,10 @@ fn create_temp_file(path: &Path) -> Result<(PathBuf, File)> {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(error).with_context(|| {
-                    format!("failed to create Kimi credential temporary file {}", temporary.display())
+                    format!(
+                        "failed to create Kimi credential temporary file {}",
+                        temporary.display()
+                    )
                 });
             }
         }
@@ -316,10 +322,17 @@ fn replace_credentials(temporary: &Path, path: &Path) -> Result<()> {
             temporary.display()
         )
     })?;
-    let parent = path.parent().context("Kimi CLI credential has no parent directory")?;
+    let parent = path
+        .parent()
+        .context("Kimi CLI credential has no parent directory")?;
     File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("failed to sync Kimi CLI credential directory {}", parent.display()))
+        .with_context(|| {
+            format!(
+                "failed to sync Kimi CLI credential directory {}",
+                parent.display()
+            )
+        })
 }
 
 #[cfg(windows)]
@@ -329,11 +342,7 @@ fn replace_credentials(temporary: &Path, path: &Path) -> Result<()> {
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
 
-    let temporary_wide: Vec<u16> = temporary
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
+    let temporary_wide: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
     let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let moved = unsafe {
         MoveFileExW(
@@ -366,12 +375,16 @@ fn replace_credentials(temporary: &Path, path: &Path) -> Result<()> {
 }
 
 fn persist_credentials_atomic(path: &Path, credentials: &Value) -> Result<()> {
-    let bytes = serde_json::to_vec_pretty(credentials).context("failed to serialize Kimi CLI credential")?;
+    let bytes = serde_json::to_vec_pretty(credentials)
+        .context("failed to serialize Kimi CLI credential")?;
     let (temporary, mut file) = create_temp_file(path)?;
     if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
         let _ = fs::remove_file(&temporary);
         return Err(error).with_context(|| {
-            format!("failed to write Kimi credential temporary file {}", temporary.display())
+            format!(
+                "failed to write Kimi credential temporary file {}",
+                temporary.display()
+            )
         });
     }
     drop(file);
@@ -398,10 +411,11 @@ fn refresh_cli_token(home: &Path) -> Result<String> {
         .context("failed to build Kimi credential refresh HTTP client")?;
     let hosts = oauth_hosts(home);
     let (mut status, mut body) = post_refresh(&client, hosts.primary, &refresh_token)?;
-    if !status.is_success() && body.contains("invalid_grant") {
-        if let Some(alternate) = hosts.alternate {
-            (status, body) = post_refresh(&client, alternate, &refresh_token)?;
-        }
+    if !status.is_success()
+        && body.contains("invalid_grant")
+        && let Some(alternate) = hosts.alternate
+    {
+        (status, body) = post_refresh(&client, alternate, &refresh_token)?;
     }
     if !status.is_success() {
         return Err(refresh_response_error(status, &body));
@@ -443,24 +457,29 @@ pub fn fetch_usages(token: &str) -> std::result::Result<UsagesResponse, FetchErr
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
-        .map_err(|error| FetchError::Other(anyhow!(error).context("failed to build HTTP client")))?;
+        .map_err(|error| {
+            FetchError::Other(anyhow!(error).context("failed to build HTTP client"))
+        })?;
     let response = client
         .get(USAGES_URL)
         .bearer_auth(token)
         .send()
-        .map_err(|error| FetchError::Other(anyhow!(error).context("failed to reach api.kimi.com")))?;
+        .map_err(|error| {
+            FetchError::Other(anyhow!(error).context("failed to reach api.kimi.com"))
+        })?;
     let status = response.status();
-    let body = response
-        .text()
-        .map_err(|error| FetchError::Other(anyhow!(error).context("failed to read kimi usage response")))?;
+    let body = response.text().map_err(|error| {
+        FetchError::Other(anyhow!(error).context("failed to read kimi usage response"))
+    })?;
     if !status.is_success() {
         return Err(FetchError::Status(
             status,
             body.trim().chars().take(200).collect(),
         ));
     }
-    serde_json::from_str(&body)
-        .map_err(|error| FetchError::Other(anyhow!(error).context("failed to parse kimi usage payload")))
+    serde_json::from_str(&body).map_err(|error| {
+        FetchError::Other(anyhow!(error).context("failed to parse kimi usage payload"))
+    })
 }
 
 fn fetch_with_refresh<F, R>(
@@ -512,7 +531,12 @@ fn windows(usages: &UsagesResponse, now: DateTime<Utc>) -> Result<Vec<UsageWindo
         )?);
     }
     if let Some(usage) = &usages.usage {
-        out.push(window_data("Weekly".to_string(), usage, Some(WEEK_MINUTES), now)?);
+        out.push(window_data(
+            "Weekly".to_string(),
+            usage,
+            Some(WEEK_MINUTES),
+            now,
+        )?);
     }
     Ok(out)
 }
@@ -579,17 +603,18 @@ impl UiPlugin for Kimi {
 
     fn collect(&mut self) -> Result<()> {
         let (mut token, cli_home) = resolve_token(self.api_key.as_deref())?;
-        if let Some(home) = cli_home.as_deref() {
-            if let Some(credentials) = cli_credentials(home) {
-                let expired = credentials
-                    .expires_at
-                    .is_some_and(|expires_at| expires_at <= Utc::now().timestamp());
-                if expired && credentials.refresh_token.is_some() {
-                    token = refresh_cli_token(home)?;
-                }
+        if let Some(home) = cli_home.as_deref()
+            && let Some(credentials) = cli_credentials(home)
+        {
+            let expired = credentials
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= Utc::now().timestamp());
+            if expired {
+                token = refresh_cli_token(home)?;
             }
         }
-        let usages = fetch_with_refresh(token, cli_home.as_deref(), fetch_usages, refresh_cli_token)?;
+        let usages =
+            fetch_with_refresh(token, cli_home.as_deref(), fetch_usages, refresh_cli_token)?;
         let now = Utc::now();
         self.windows = windows(&usages, now)?;
         // The payload carries no "generated at", so the header shows when this
@@ -630,7 +655,9 @@ mod tests {
 
     fn sample_at(iso: &str) -> Vec<UsageWindowData> {
         let usages: UsagesResponse = serde_json::from_str(SAMPLE).unwrap();
-        let now = DateTime::parse_from_rfc3339(iso).unwrap().with_timezone(&Utc);
+        let now = DateTime::parse_from_rfc3339(iso)
+            .unwrap()
+            .with_timezone(&Utc);
         windows(&usages, now).unwrap()
     }
 
@@ -665,9 +692,15 @@ mod tests {
         let windows = sample_at("2026-01-06T11:33:02Z");
         let labels: Vec<&str> = windows.iter().map(|window| window.label.as_str()).collect();
         assert_eq!(labels, ["5h", "Weekly"], "wider 24h window must be dropped");
-        assert!((windows[0].utilization - 69.5).abs() < 0.01, "139/200 => 69.5%");
+        assert!(
+            (windows[0].utilization - 69.5).abs() < 0.01,
+            "139/200 => 69.5%"
+        );
         assert!((windows[0].resets_in_minutes.unwrap() - 120.0).abs() < 0.05);
-        assert!((windows[1].utilization - 10.449).abs() < 0.01, "214/2048 => 10.45%");
+        assert!(
+            (windows[1].utilization - 10.449).abs() < 0.01,
+            "214/2048 => 10.45%"
+        );
     }
 
     #[test]
@@ -684,7 +717,11 @@ mod tests {
     #[test]
     fn expired_reset_times_drop_pace_instead_of_faking_it() {
         let windows = sample_at("2026-02-01T00:00:00Z");
-        assert!(windows.iter().all(|window| window.resets_in_minutes.is_none()));
+        assert!(
+            windows
+                .iter()
+                .all(|window| window.resets_in_minutes.is_none())
+        );
         assert!(windows.iter().all(|window| window.delta_percent.is_none()));
     }
 
@@ -692,7 +729,10 @@ mod tests {
     fn reports_missing_credentials_instead_of_calling_the_api() {
         temp_env_clear();
         let error = resolve_token(None).unwrap_err().to_string();
-        assert!(error.contains("KIMI_CODE_API_KEY"), "unhelpful error: {error}");
+        assert!(
+            error.contains("KIMI_CODE_API_KEY"),
+            "unhelpful error: {error}"
+        );
         assert_eq!(
             resolve_token(Some(" sk-kimi-x ")).unwrap(),
             ("sk-kimi-x".to_string(), None)
@@ -763,8 +803,13 @@ mod tests {
 
     #[test]
     fn unauthorized_only_for_401() {
-        assert!(FetchError::Status(reqwest::StatusCode::UNAUTHORIZED, String::new()).is_unauthorized());
-        assert!(!FetchError::Status(reqwest::StatusCode::INTERNAL_SERVER_ERROR, String::new()).is_unauthorized());
+        assert!(
+            FetchError::Status(reqwest::StatusCode::UNAUTHORIZED, String::new()).is_unauthorized()
+        );
+        assert!(
+            !FetchError::Status(reqwest::StatusCode::INTERNAL_SERVER_ERROR, String::new())
+                .is_unauthorized()
+        );
         assert!(!FetchError::Other(anyhow!("network")).is_unauthorized());
     }
 
@@ -778,7 +823,10 @@ mod tests {
             |_| {
                 fetches += 1;
                 if fetches == 1 {
-                    Err(FetchError::Status(reqwest::StatusCode::UNAUTHORIZED, String::new()))
+                    Err(FetchError::Status(
+                        reqwest::StatusCode::UNAUTHORIZED,
+                        String::new(),
+                    ))
                 } else {
                     Ok(empty_usages())
                 }
@@ -801,7 +849,10 @@ mod tests {
             Some(Path::new("/test-kimi-home")),
             |_| {
                 fetches += 1;
-                Err(FetchError::Status(reqwest::StatusCode::UNAUTHORIZED, String::new()))
+                Err(FetchError::Status(
+                    reqwest::StatusCode::UNAUTHORIZED,
+                    String::new(),
+                ))
             },
             |_| {
                 refreshes += 1;
@@ -822,7 +873,10 @@ mod tests {
             None,
             |_| {
                 fetches += 1;
-                Err(FetchError::Status(reqwest::StatusCode::UNAUTHORIZED, String::new()))
+                Err(FetchError::Status(
+                    reqwest::StatusCode::UNAUTHORIZED,
+                    String::new(),
+                ))
             },
             |_| {
                 refreshes += 1;
@@ -845,7 +899,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }

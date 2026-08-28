@@ -105,12 +105,19 @@ fn cli_refresh() -> Result<()> {
         .output()
         .context("failed to run Claude Code CLI for OAuth renewal")?;
     if !output.status.success() {
-        anyhow::bail!("Claude Code CLI OAuth renewal exited with {}", output.status);
+        anyhow::bail!(
+            "Claude Code CLI OAuth renewal exited with {}",
+            output.status
+        );
     }
     Ok(())
 }
 
-fn fetch_with_cli_refresh<F, U, R>(mut fetch: F, mut unauthorized: U, mut refresh: R) -> Result<ActiveData>
+fn fetch_with_cli_refresh<F, U, R>(
+    mut fetch: F,
+    mut unauthorized: U,
+    mut refresh: R,
+) -> Result<ActiveData>
 where
     F: FnMut() -> Result<ActiveData>,
     U: FnMut() -> bool,
@@ -157,7 +164,11 @@ impl UiPlugin for Claude {
     }
 
     fn collect(&mut self) -> Result<()> {
-        self.data = Some(fetch_with_cli_refresh(fetch_stats, oauth_is_unauthorized, cli_refresh)?);
+        self.data = Some(fetch_with_cli_refresh(
+            fetch_stats,
+            oauth_is_unauthorized,
+            cli_refresh,
+        )?);
         Ok(())
     }
 

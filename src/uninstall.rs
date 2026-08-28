@@ -72,10 +72,8 @@ mod tests {
 
     #[test]
     fn removes_config_tree_and_executable() {
-        let root = std::env::temp_dir().join(format!(
-            "geekmagic-uninstall-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("geekmagic-uninstall-test-{}", std::process::id()));
         let config_root = root.join(".config/geekmagic-custom-monitors");
         let executable = root.join("bin/geekmagic-monitors");
         let _ = std::fs::remove_dir_all(&root);

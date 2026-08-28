@@ -24,7 +24,11 @@ struct VersionInfo {
     v: Option<String>,
 }
 
-pub fn detect(client: &reqwest::blocking::Client, base: &str, cfg_model: Option<&str>) -> DeviceInfo {
+pub fn detect(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    cfg_model: Option<&str>,
+) -> DeviceInfo {
     let (model, album_theme) = match cfg_model {
         Some("ultra") => (Model::Ultra, 3),
         Some("pro") => (Model::Pro, 4),

@@ -120,13 +120,13 @@ fn draw_gradient_bar(
     img: &mut RgbaImage,
     x: i32,
     y: i32,
-    total_w: u32,
-    h: u32,
+    dimensions: (u32, u32),
     fill_frac: f32,
-    left_color: Rgba<u8>,
-    right_color: Rgba<u8>,
+    colors: (Rgba<u8>, Rgba<u8>),
     corner_r: u32,
 ) {
+    let (total_w, h) = dimensions;
+    let (left_color, right_color) = colors;
     common::draw_rounded_rect(img, x, y, total_w, h, corner_r, BAR_TRACK);
     let fill_w = ((total_w as f32) * fill_frac.clamp(0.0, 1.0)) as u32;
     if fill_w == 0 {
@@ -288,7 +288,9 @@ pub fn render_usage_bars(
     );
 
     // Updated timestamp (right-aligned, bigger)
-    let updated_text = updated_at.map(format_updated_time).unwrap_or_else(|| "—".to_string());
+    let updated_text = updated_at
+        .map(format_updated_time)
+        .unwrap_or_else(|| "—".to_string());
     common::draw_text_right(
         &mut img,
         TEXT_DIM,
@@ -386,7 +388,15 @@ pub fn render_usage_bars(
         let bar_h = BAR_H;
         let fill_frac = (w.utilization / 100.0) as f32;
         let (fill_l, fill_r) = bar_colors(&w.usage_level);
-        draw_gradient_bar(&mut img, bar_x, bar_y, bar_w, bar_h, fill_frac, fill_l, fill_r, 7);
+        draw_gradient_bar(
+            &mut img,
+            bar_x,
+            bar_y,
+            (bar_w, bar_h),
+            fill_frac,
+            (fill_l, fill_r),
+            7,
+        );
 
         // Pace marker on bar
         if let (Some(expected), Some(will_last)) = (w.expected_percent, w.will_last_to_reset) {
@@ -501,8 +511,7 @@ mod tests {
 
     fn last_drawn_row(img: &RgbaImage) -> u32 {
         (0..H)
-            .filter(|&y| (0..W).any(|x| *img.get_pixel(x, y) != BG))
-            .next_back()
+            .rfind(|&y| (0..W).any(|x| *img.get_pixel(x, y) != BG))
             .expect("something was drawn")
     }
 
@@ -519,7 +528,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(last_drawn_row(&img) < H - 2, "content touches the bottom edge");
+        assert!(
+            last_drawn_row(&img) < H - 2,
+            "content touches the bottom edge"
+        );
         let gap = empty_rows(&img);
         assert!(
             gap.iter().any(|&y| (100..160).contains(&y)),
@@ -539,7 +551,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(last_drawn_row(&img) < H - 2, "content touches the bottom edge");
+        assert!(
+            last_drawn_row(&img) < H - 2,
+            "content touches the bottom edge"
+        );
         assert!(
             empty_rows(&img).iter().any(|&y| (100..160).contains(&y)),
             "panels are fused when both sections are tall"
@@ -562,9 +577,6 @@ mod tests {
                 assert_eq!(*img.get_pixel(x, y), Rgba([255, 0, 255, 255]));
             }
         }
-        assert!(
-            (10..=32).any(|y| (40..=159).any(|x| *img.get_pixel(x, y) == TEXT_PRIMARY))
-        );
+        assert!((10..=32).any(|y| (40..=159).any(|x| *img.get_pixel(x, y) == TEXT_PRIMARY)));
     }
-
 }

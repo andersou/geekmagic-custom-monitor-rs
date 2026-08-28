@@ -94,16 +94,14 @@ fn parse_launchd(output: &str) -> (bool, Option<u32>) {
     let mut pid_seen = false;
     for line in output.lines() {
         let line = line.trim();
-        if running.is_none() {
-            if let Some(value) = line.strip_prefix("state =") {
-                running = Some(value.trim() == "running");
-            }
+        if running.is_none()
+            && let Some(value) = line.strip_prefix("state =")
+        {
+            running = Some(value.trim() == "running");
         }
-        if !pid_seen {
-            if let Some(value) = line.strip_prefix("pid =") {
-                pid_seen = true;
-                pid = value.trim().parse().ok();
-            }
+        if !pid_seen && let Some(value) = line.strip_prefix("pid =") {
+            pid_seen = true;
+            pid = value.trim().parse().ok();
         }
     }
     (running.unwrap_or(false), pid)
@@ -297,7 +295,11 @@ fn status_impl() -> Result<()> {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
-        if out.is_empty() { "unknown".to_string() } else { out }
+        if out.is_empty() {
+            "unknown".to_string()
+        } else {
+            out
+        }
     };
     let enabled = probe(&["--user", "is-enabled", LINUX_NAME]);
     let active = probe(&["--user", "is-active", LINUX_NAME]);
@@ -345,8 +347,8 @@ fn running_pids(name: &str) -> Vec<u32> {
 
 #[cfg(target_os = "windows")]
 fn enable_impl() -> Result<()> {
-    use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
 
     let exe = std::env::current_exe().context("failed to resolve current exe")?;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -363,8 +365,8 @@ fn enable_impl() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn disable_impl() -> Result<()> {
-    use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (key, _) = hkcu
@@ -397,8 +399,8 @@ fn restart_impl() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn status_impl() -> Result<()> {
-    use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let enabled = hkcu

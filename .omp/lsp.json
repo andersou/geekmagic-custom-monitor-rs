@@ -1,0 +1,24 @@
+{
+  "rust-analyzer": {
+    "command": "sh",
+    "args": ["scripts/vfox-rust", "rust-analyzer"],
+    "fileTypes": [".rs"],
+    "languageId": "rust",
+    "rootMarkers": ["Cargo.toml"],
+    "initOptions": {
+      "cargo": {
+        "allTargets": true,
+        "buildScripts": {
+          "enable": true
+        }
+      },
+      "procMacro": {
+        "enable": true
+      },
+      "check": {
+        "command": "clippy",
+        "extraArgs": ["--all-targets", "--all-features"]
+      }
+    }
+  }
+}

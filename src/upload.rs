@@ -1,9 +1,9 @@
 use std::{fs, io::Cursor, path::Path};
 
 use anyhow::{Context, Result};
+use chrono::Local;
 use image::RgbaImage;
 use reqwest::blocking::multipart;
-use chrono::Local;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageMode {
@@ -27,10 +27,7 @@ fn parse_filelist(body: &str) -> Vec<String> {
             .split("/image//")
             .skip(1)
             .filter_map(|chunk| {
-                let name = chunk
-                    .split(|c| matches!(c, '\'' | '"' | '<'))
-                    .next()
-                    .unwrap_or_default();
+                let name = chunk.split(['\'', '"', '<']).next().unwrap_or_default();
                 (!name.is_empty()).then(|| name.to_string())
             })
             .collect();
@@ -116,9 +113,7 @@ fn remove_non_screen_images(
         .unwrap_or_default();
     let victims: Vec<_> = parse_filelist(&body)
         .into_iter()
-        .filter(|name| {
-            is_image(name) && !keep_filenames.iter().any(|filename| *filename == name.as_str())
-        })
+        .filter(|name| is_image(name) && !keep_filenames.contains(&name.as_str()))
         .collect();
 
     if victims.is_empty() {
@@ -174,13 +169,11 @@ fn remove_non_screen_images(
     }
 
     if backed_up == 0 {
-        if created_backup_dir {
-            if let Err(error) = fs::remove_dir(&backup_dir) {
-                eprintln!(
-                    "only-stats: failed to remove empty backup dir {}: {error}",
-                    backup_dir.display()
-                );
-            }
+        if created_backup_dir && let Err(error) = fs::remove_dir(&backup_dir) {
+            eprintln!(
+                "only-stats: failed to remove empty backup dir {}: {error}",
+                backup_dir.display()
+            );
         }
         return Ok(());
     }
