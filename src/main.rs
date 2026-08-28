@@ -99,6 +99,8 @@ struct RuntimeArgs {
     parallel: bool,
     autoplay_interval: u64,
     image_mode: upload::ImageMode,
+    output_format: upload::OutputFormat,
+    jpeg_quality: u8,
     backup_retention: usize,
     model: Option<String>,
     failure_threshold: u32,
@@ -147,7 +149,7 @@ fn record_outcome(
                 );
             }
             Some((
-                plugin.filename(),
+                plugin.name(),
                 crate::render::error::render_plugin_error(plugin.name(), count),
             ))
         }
@@ -171,7 +173,7 @@ fn collect_render(
     let run_one = |p: &mut Box<dyn UiPlugin>| -> Result<(&'static str, RgbaImage)> {
         p.collect()?;
         let img = p.render()?;
-        Ok((p.filename(), img))
+        Ok((p.name(), img))
     };
 
     let results: Vec<Result<(&'static str, RgbaImage)>> = if parallel {
@@ -229,18 +231,26 @@ fn run_cycle(
 
     if let Some(dir) = &args.output_dir {
         std::fs::create_dir_all(dir)?;
-        for (filename, img) in &screens {
-            let png = format!("{}.png", filename.trim_end_matches(".jpg"));
-            let path = format!("{dir}/{png}");
-            img.save(&path)?;
+        for (plugin_name, img) in &screens {
+            let filename = upload::generated_filename(plugin_name, args.output_format);
+            let path = format!("{dir}/{filename}");
+            let bytes = upload::encode_image(img, args.output_format, args.jpeg_quality)?;
+            std::fs::write(&path, bytes)?;
             println!("[{}] saved {path}", now());
         }
         status.upload = Some(format!("saved {} screen(s) to {dir}", screens.len()));
     } else {
         let host = args.host.as_ref().expect("host checked at startup");
         let album_theme = device.as_ref().map(|d| d.album_theme).unwrap_or(3);
-        let refs: Vec<(&str, &RgbaImage)> = screens.iter().map(|(f, i)| (*f, i)).collect();
-        if let Err(e) = upload::upload_screens(host, album_theme, args.autoplay_interval, &refs) {
+        let refs: Vec<(&str, &RgbaImage)> = screens.iter().map(|(name, image)| (*name, image)).collect();
+        if let Err(e) = upload::upload_screens(
+            host,
+            album_theme,
+            args.autoplay_interval,
+            args.output_format,
+            args.jpeg_quality,
+            &refs,
+        ) {
             status.upload = Some(format!("failed: {e:#}"));
             return Err(e);
         }
@@ -295,12 +305,13 @@ fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
         let client = upload::make_client()?;
         let d = device::detect(&client, &format!("http://{host}"), args.model.as_deref());
         log_device(&d);
-        let keep_filenames: Vec<_> = plugins.iter().map(|plugin| plugin.filename()).collect();
+        let plugin_names: Vec<_> = plugins.iter().map(|plugin| plugin.name()).collect();
         upload::prepare_images(
             host,
             args.image_mode,
             args.backup_retention,
-            &keep_filenames,
+            args.output_format,
+            &plugin_names,
         )?;
         Some(d)
     } else {
@@ -365,6 +376,27 @@ fn main() -> Result<()> {
                     })
                 })
                 .unwrap_or(upload::ImageMode::Append);
+            let output_format = cfg
+                .image_format
+                .as_deref()
+                .map(|value| {
+                    upload::OutputFormat::parse(value).unwrap_or_else(|| {
+                        eprintln!("unknown image_format '{value}', falling back to 'jpg'");
+                        upload::OutputFormat::Jpeg
+                    })
+                })
+                .unwrap_or(upload::OutputFormat::Jpeg);
+            let jpeg_quality = match cfg.jpeg_quality {
+                Some(value @ 1..=100) => value as u8,
+                Some(value) => {
+                    eprintln!(
+                        "jpeg_quality '{value}' must be between 1 and 100, falling back to {}",
+                        upload::DEFAULT_JPEG_QUALITY
+                    );
+                    upload::DEFAULT_JPEG_QUALITY
+                }
+                None => upload::DEFAULT_JPEG_QUALITY,
+            };
             let backup_retention = match cfg.backup_retention {
                 Some(0) => {
                     eprintln!("backup_retention must be at least 1, falling back to 5");
@@ -391,6 +423,8 @@ fn main() -> Result<()> {
                 parallel,
                 autoplay_interval: cfg.autoplay_interval.unwrap_or(10),
                 image_mode,
+                output_format,
+                jpeg_quality,
                 backup_retention,
                 model: cfg.model.clone(),
                 failure_threshold,
@@ -425,11 +459,8 @@ mod tests {
         }
     }
 
-    impl UiPlugin for Stub {
-        fn filename(&self) -> &'static str {
-            "stub.jpg"
-        }
 
+    impl UiPlugin for Stub {
         fn collect(&mut self) -> Result<()> {
             unreachable!("record_outcome does not collect")
         }
@@ -493,7 +524,7 @@ mod tests {
             record_outcome(
                 &mut failures,
                 &plugin,
-                Ok(("stub.jpg", screen)),
+                Ok(("stub", screen)),
                 5,
                 &mut report
             )

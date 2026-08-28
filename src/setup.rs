@@ -80,6 +80,27 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
     if upload::ImageMode::parse(&image_mode).is_none() {
         anyhow::bail!("invalid image_mode '{image_mode}'");
     }
+    let image_format = prompt(
+        "image_format (jpg | png)",
+        Some(existing.image_format.as_deref().unwrap_or("jpg")),
+    )?;
+    if upload::OutputFormat::parse(&image_format).is_none() {
+        anyhow::bail!("invalid image_format '{image_format}'");
+    }
+    let jpeg_quality_default = existing
+        .jpeg_quality
+        .unwrap_or(i64::from(upload::DEFAULT_JPEG_QUALITY))
+        .to_string();
+    let jpeg_quality = prompt(
+        "JPEG quality (1-100; used only for jpg)",
+        Some(&jpeg_quality_default),
+    )?;
+    let jpeg_quality: i64 = jpeg_quality
+        .parse()
+        .with_context(|| format!("invalid JPEG quality '{jpeg_quality}'"))?;
+    if !(1..=100).contains(&jpeg_quality) {
+        anyhow::bail!("JPEG quality must be between 1 and 100");
+    }
     let retention_default = existing.backup_retention.unwrap_or(5).to_string();
     let backup_retention = prompt("backup directories to keep", Some(&retention_default))?;
     let backup_retention: usize = backup_retention
@@ -147,6 +168,8 @@ pub fn run(config_path: Option<&str>) -> Result<()> {
         parallel_render: Some(parallel),
         autoplay_interval: Some(autoplay),
         image_mode: Some(image_mode),
+        image_format: Some(image_format),
+        jpeg_quality: Some(jpeg_quality),
         backup_retention: Some(backup_retention),
         failure_threshold: Some(failure_threshold),
         plugins: Some(plugin_configs),

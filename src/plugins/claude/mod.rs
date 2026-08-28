@@ -177,9 +177,6 @@ impl Plugin for Claude {
 }
 
 impl UiPlugin for Claude {
-    fn filename(&self) -> &'static str {
-        "claude.jpg"
-    }
 
     fn collect(&mut self) -> Result<()> {
         self.data = Some(fetch_with_cli_refresh(

@@ -23,6 +23,10 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_mode: Option<String>, // "append" (default) | "only-stats"
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_format: Option<String>, // "jpg" (default) | "png"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jpeg_quality: Option<i64>, // 1-100; used only for jpg
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_retention: Option<usize>, // backup directories kept, default 5
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_threshold: Option<u32>, // consecutive failed cycles before a plugin error screen
@@ -97,6 +101,8 @@ fn default_config_toml() -> String {
         "# parallel_render = false\n",
         "# autoplay_interval = 10    # device slideshow seconds\n",
         "# image_mode = \"append\"  # append | only-stats\n",
+        "# image_format = \"jpg\"      # jpg | png\n",
+        "# jpeg_quality = 75         # 1-100; used only for jpg\n",
         "backup_retention = 5      # backup directories kept\n",
         "# failure_threshold = 5  # failed cycles before a plugin shows an error screen\n",
     ));

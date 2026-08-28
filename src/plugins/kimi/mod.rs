@@ -651,9 +651,6 @@ impl Plugin for Kimi {
 }
 
 impl UiPlugin for Kimi {
-    fn filename(&self) -> &'static str {
-        "kimi.jpg"
-    }
 
     fn collect(&mut self) -> Result<()> {
         let (mut token, cli_home) = resolve_token(self.api_key.as_deref())?;

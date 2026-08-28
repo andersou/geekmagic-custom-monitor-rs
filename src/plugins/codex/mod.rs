@@ -389,9 +389,6 @@ impl Plugin for Codex {
 }
 
 impl UiPlugin for Codex {
-    fn filename(&self) -> &'static str {
-        "codex.jpg"
-    }
 
     fn collect(&mut self) -> Result<()> {
         let mut rpc = CodexRpc::start()?;
@@ -613,7 +610,6 @@ mod tests {
         let codex = Codex::new();
         assert_eq!(codex.name(), "codex");
         assert_eq!(codex.get_plugin_kind(), PluginKind::Ui);
-        assert_eq!(codex.filename(), "codex.jpg");
         assert!(!codex.needs_api_key());
     }
 

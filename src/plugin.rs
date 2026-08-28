@@ -25,7 +25,6 @@ pub trait Plugin: Send {
 
 /// A screen: collected, rendered and uploaded once per cycle.
 pub trait UiPlugin: Plugin {
-    fn filename(&self) -> &'static str; // device file, e.g. "claude.jpg"
     fn collect(&mut self) -> Result<()>; // fetch data into self
     fn render(&self) -> Result<RgbaImage>; // 240x240, uses crate::render primitives
     fn depends_on(&self) -> &'static [&'static str] {
