@@ -3,6 +3,7 @@ pub mod render;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use chrono::Local;
 use image::RgbaImage;
 
 use crate::plugin::{Plugin, PluginKind, UiPlugin};
@@ -71,6 +72,7 @@ impl Plugin for Disk {
 }
 
 impl UiPlugin for Disk {
+
     fn collect(&mut self) -> Result<()> {
         self.info = Some(get_disk_info()?);
         Ok(())
@@ -83,6 +85,7 @@ impl UiPlugin for Disk {
             free_percent,
             &format_size(info.used_bytes),
             &format_size(info.free_bytes),
+            &Local::now().format("%H:%M").to_string(),
         )
     }
 }

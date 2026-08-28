@@ -16,7 +16,12 @@ const PIE_FREE: Rgba<u8> = Rgba([34, 197, 94, 255]);
 const PIE_FREE_2: Rgba<u8> = Rgba([16, 185, 129, 255]);
 const PIE_BG: Rgba<u8> = Rgba([30, 30, 40, 255]);
 
-pub fn render_donut(free_percent: f64, used_label: &str, free_label: &str) -> Result<RgbaImage> {
+pub fn render_donut(
+    free_percent: f64,
+    used_label: &str,
+    free_label: &str,
+    updated_time: &str,
+) -> Result<RgbaImage> {
     let font = common::font_regular();
     let font_bold = common::font_bold();
     let mut img = RgbaImage::from_pixel(W, H, BG);
@@ -27,10 +32,11 @@ pub fn render_donut(free_percent: f64, used_label: &str, free_label: &str) -> Re
 
     // Header
     let header_y = 10;
+    draw_disk_icon(&mut img, mx, header_y);
     draw_text_mut(
         &mut img,
         TEXT_PRIMARY,
-        mx,
+        mx + 24,
         header_y,
         PxScale::from(17.0),
         font_bold,
@@ -43,7 +49,7 @@ pub fn render_donut(free_percent: f64, used_label: &str, free_label: &str) -> Re
         header_y + 1,
         15.0,
         font,
-        free_label,
+        updated_time,
     );
 
     common::draw_rounded_rect(&mut img, mx, 33, content_w, 1, 0, SEPARATOR);
@@ -171,4 +177,32 @@ pub fn render_donut(free_percent: f64, used_label: &str, free_label: &str) -> Re
     );
 
     Ok(img)
+}
+
+fn draw_disk_icon(img: &mut RgbaImage, x: i32, y: i32) {
+    const ICON_BG: Rgba<u8> = Rgba([99, 102, 241, 255]);
+    const ICON_SLOT: Rgba<u8> = Rgba([196, 181, 253, 255]);
+
+    common::draw_rounded_rect(img, x, y, 18, 18, 4, ICON_BG);
+    common::draw_rounded_rect(img, x + 4, y + 5, 10, 2, 1, ICON_SLOT);
+    common::draw_rounded_rect(img, x + 4, y + 11, 6, 2, 1, ICON_SLOT);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_draws_icon_and_time() {
+        let img = render_donut(50.0, "500 GB", "500 GB", "12:34").unwrap();
+        let different_time = render_donut(50.0, "500 GB", "500 GB", "12:35").unwrap();
+
+        assert_eq!(img.get_pixel(18, 12), &Rgba([99, 102, 241, 255]));
+        assert_eq!(img.get_pixel(21, 15), &Rgba([196, 181, 253, 255]));
+        let header_row_bytes = W as usize * 4;
+        assert_ne!(
+            &img.as_raw()[10 * header_row_bytes..29 * header_row_bytes],
+            &different_time.as_raw()[10 * header_row_bytes..29 * header_row_bytes]
+        );
+    }
 }

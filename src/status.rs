@@ -15,6 +15,8 @@ pub struct PluginFailure {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct DaemonStatus {
+    #[serde(default)]
+    pub version: String,
     pub pid: u32,
     pub started_at: String,         // RFC 3339, local time
     pub interval_secs: Option<u64>, // None = one-shot run
@@ -49,4 +51,30 @@ pub fn write(status: &DaemonStatus) {
 pub fn read() -> Option<DaemonStatus> {
     let body = std::fs::read_to_string(path().ok()?).ok()?;
     serde_json::from_str(&body).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DaemonStatus;
+
+    #[test]
+    fn reads_status_written_before_version_was_tracked() {
+        let status: DaemonStatus = serde_json::from_str(
+            r#"{
+                "pid": 1234,
+                "started_at": "2026-08-28T12:00:00-03:00",
+                "interval_secs": 300,
+                "plugins": [],
+                "device": null,
+                "last_cycle_at": null,
+                "succeeded": [],
+                "failed": [],
+                "upload": null,
+                "cycle_error": null
+            }"#,
+        )
+        .unwrap();
+
+        assert!(status.version.is_empty());
+    }
 }

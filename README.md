@@ -230,6 +230,12 @@ If the section or `enabled` is absent, the plugin is enabled by default. Missing
 
 ## Usage
 
+Show the installed CLI version:
+
+```sh
+geekmagic-monitors --version
+```
+
 Run one cycle using the default configuration:
 
 ```sh
@@ -275,7 +281,7 @@ Disable and remove it:
 geekmagic-monitors daemon disable
 ```
 
-Show the service state plus the last cycle's outcome — which plugins succeeded, which failed and why, and the upload result:
+Show the service state plus the version reported by its last cycle, the last cycle's outcome, which plugins succeeded, which failed and why, and the upload result:
 
 ```sh
 geekmagic-monitors daemon status

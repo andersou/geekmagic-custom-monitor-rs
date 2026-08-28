@@ -20,6 +20,8 @@ use image::RgbaImage;
 use crate::device::Model;
 use crate::plugin::UiPlugin;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser)]
 #[command(
     name = "geekmagic-monitors",
@@ -293,6 +295,7 @@ fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
     println!("enabled plugins: {}", names.join(", "));
 
     let mut status = status::DaemonStatus {
+        version: VERSION.to_string(),
         pid: std::process::id(),
         started_at: chrono::Local::now().to_rfc3339(),
         interval_secs: args.interval,

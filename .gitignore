@@ -24,3 +24,4 @@
 
 # Rust formatter backups
 **/*.rs.bk
+.vfox/

@@ -22,10 +22,19 @@ pub fn status() -> Result<()> {
     Ok(())
 }
 
+fn display_version(version: &str) -> &str {
+    if version.is_empty() {
+        "unknown (status written by an older binary)"
+    } else {
+        version
+    }
+}
+
 fn print_cycle_status() {
     match crate::status::read() {
         None => println!("status: no cycle recorded yet (run the daemon or a one-shot cycle once)"),
         Some(s) => {
+            println!("version: {}", display_version(&s.version));
             println!("process: pid {}, started {}", s.pid, s.started_at);
             match s.interval_secs {
                 Some(secs) => println!("interval: every {secs}s"),
@@ -469,5 +478,19 @@ mod tests {
                       \tlast exit code = 0\n\
                       }";
         assert_eq!(parse_launchd(output), (false, None));
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::display_version;
+
+    #[test]
+    fn identifies_status_without_a_recorded_version() {
+        assert_eq!(
+            display_version(""),
+            "unknown (status written by an older binary)"
+        );
+        assert_eq!(display_version("1.2.3"), "1.2.3");
     }
 }
