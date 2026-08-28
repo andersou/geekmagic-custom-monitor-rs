@@ -39,7 +39,7 @@ hooks = [
 [[repos]]
 repo = "local"
 hooks = [
-  { id = "cargo-fmt", name = "cargo fmt", entry = "sh scripts/vfox-rust cargo fmt --all -- --check", language = "system", pass_filenames = false, files = "(^|/)Cargo\\.(toml|lock)$|\\.rs$", stages = ["pre-commit"] },
-  { id = "cargo-clippy", name = "cargo clippy", entry = "sh scripts/vfox-rust cargo clippy --workspace --all-targets --all-features --locked -- -D warnings", language = "system", pass_filenames = false, files = "(^|/)Cargo\\.(toml|lock)$|\\.rs$", stages = ["pre-commit"] },
-  { id = "cargo-test", name = "cargo test", entry = "sh scripts/vfox-rust cargo test --workspace --all-targets --all-features --locked", language = "system", pass_filenames = false, always_run = true, stages = ["pre-push"] },
+  { id = "cargo-fmt", name = "cargo fmt", entry = "cargo fmt --all -- --check", language = "system", pass_filenames = false, files = "(^|/)Cargo\\.(toml|lock)$|\\.rs$", stages = ["pre-commit"] },
+  { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings", language = "system", pass_filenames = false, files = "(^|/)Cargo\\.(toml|lock)$|\\.rs$", stages = ["pre-commit"] },
+  { id = "cargo-test", name = "cargo test", entry = "cargo test --workspace --all-targets --all-features --locked", language = "system", pass_filenames = false, always_run = true, stages = ["pre-push"] },
 ]

@@ -10,7 +10,6 @@
 .env
 .env.*
 !.env.example
-/.vfox/
 /node_modules/
 /dist/
 

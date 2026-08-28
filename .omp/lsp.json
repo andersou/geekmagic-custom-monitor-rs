@@ -1,7 +1,7 @@
 {
   "rust-analyzer": {
-    "command": "sh",
-    "args": ["scripts/vfox-rust", "rust-analyzer"],
+    "command": "rust-analyzer",
+    "args": [],
     "fileTypes": [".rs"],
     "languageId": "rust",
     "rootMarkers": ["Cargo.toml"],
