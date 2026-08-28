@@ -48,6 +48,7 @@ pub struct PaceInfo {
 }
 
 /// Fill in pace data for windows the API left blank.
+#[cfg(not(windows))]
 fn ensure_pace(window: &mut UsageWindow, window_minutes: f64) {
     if window.pace.is_some() {
         return;

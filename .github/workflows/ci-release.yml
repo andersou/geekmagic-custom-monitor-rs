@@ -29,7 +29,7 @@ jobs:
       - uses: j178/prek-action@4e14d07f9231acabce116ccfca13b13dd9755ece # v3.0.0
         with:
           prek-version: "0.5.0"
-          args: run --all-files
+          extra-args: --all-files
       - name: Run pre-push tests
         run: prek run cargo-test --hook-stage pre-push --all-files
 
