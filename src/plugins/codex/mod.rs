@@ -277,13 +277,21 @@ fn codex_program_candidates(codex_binary: Option<&OsStr>, home: Option<&Path>) -
         return vec![binary.to_os_string()];
     }
 
-    let mut candidates = vec![OsString::from("codex")];
-    if let Some(home) = home {
-        candidates.push(home.join(".local/bin/codex").into_os_string());
+    #[cfg(not(windows))]
+    {
+        let mut candidates = vec![OsString::from("codex")];
+        if let Some(home) = home {
+            candidates.push(home.join(".local/bin/codex").into_os_string());
+        }
+        candidates.push(OsString::from("/opt/homebrew/bin/codex"));
+        candidates.push(OsString::from("/usr/local/bin/codex"));
+        candidates
     }
-    candidates.push(OsString::from("/opt/homebrew/bin/codex"));
-    candidates.push(OsString::from("/usr/local/bin/codex"));
-    candidates
+    #[cfg(windows)]
+    {
+        let _ = home;
+        vec![OsString::from("codex")]
+    }
 }
 
 /// The `codex` bucket is the ChatGPT plan quota. Older CLIs expose only the
@@ -618,6 +626,7 @@ mod tests {
         );
 
         let candidates = codex_program_candidates(None, Some(home));
+        #[cfg(not(windows))]
         assert_eq!(
             candidates,
             vec![
@@ -627,6 +636,8 @@ mod tests {
                 OsString::from("/usr/local/bin/codex"),
             ]
         );
+        #[cfg(windows)]
+        assert_eq!(candidates, vec![OsString::from("codex")]);
         assert_eq!(
             codex_program_candidates(Some(OsStr::new("")), Some(home)),
             candidates
