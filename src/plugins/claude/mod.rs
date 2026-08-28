@@ -177,7 +177,6 @@ impl Plugin for Claude {
 }
 
 impl UiPlugin for Claude {
-
     fn collect(&mut self) -> Result<()> {
         self.data = Some(fetch_with_cli_refresh(
             fetch_stats,

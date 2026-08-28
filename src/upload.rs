@@ -41,7 +41,6 @@ impl OutputFormat {
     }
 }
 
-
 const LEGACY_GENERATED_FILENAMES: &[&str] = &["claude.jpg", "codex.jpg", "disk.jpg", "kimi.jpg"];
 
 fn select_cleanup_victims(
@@ -61,7 +60,10 @@ fn select_cleanup_victims(
         .collect()
 }
 pub fn generated_filename(plugin_name: &str, format: OutputFormat) -> String {
-    format!("{GENERATED_FILE_PREFIX}{plugin_name}.{}", format.extension())
+    format!(
+        "{GENERATED_FILE_PREFIX}{plugin_name}.{}",
+        format.extension()
+    )
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageMode {
@@ -250,11 +252,7 @@ fn cleanup_images(
     Ok(())
 }
 
-pub fn encode_image(
-    img: &RgbaImage,
-    format: OutputFormat,
-    jpeg_quality: u8,
-) -> Result<Vec<u8>> {
+pub fn encode_image(img: &RgbaImage, format: OutputFormat, jpeg_quality: u8) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     match format {
         OutputFormat::Jpeg => {
@@ -448,32 +446,59 @@ mod tests {
         assert_eq!(&jpeg[..3], [0xFF, 0xD8, 0xFF]);
         assert_eq!(image::load_from_memory(&jpeg).unwrap().dimensions(), (2, 1));
         assert_eq!(OutputFormat::Jpeg.mime_type(), "image/jpeg");
-        assert_eq!(generated_filename("codex", OutputFormat::Jpeg), "gmcm-plugin-codex.jpg");
+        assert_eq!(
+            generated_filename("codex", OutputFormat::Jpeg),
+            "gmcm-plugin-codex.jpg"
+        );
 
         let png = encode_image(&image, OutputFormat::Png, 75).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(image::load_from_memory(&png).unwrap().to_rgba8().get_pixel(0, 0), &Rgba([10, 20, 30, 40]));
+        assert_eq!(
+            image::load_from_memory(&png)
+                .unwrap()
+                .to_rgba8()
+                .get_pixel(0, 0),
+            &Rgba([10, 20, 30, 40])
+        );
         assert_eq!(OutputFormat::Png.mime_type(), "image/png");
-        assert_eq!(generated_filename("codex", OutputFormat::Png), "gmcm-plugin-codex.png");
+        assert_eq!(
+            generated_filename("codex", OutputFormat::Png),
+            "gmcm-plugin-codex.png"
+        );
     }
 
     #[test]
     fn jpeg_quality_changes_encoded_payload() {
-        let image = RgbaImage::from_fn(64, 64, |x, y| Rgba([x as u8 * 4, y as u8 * 4, (x ^ y) as u8 * 4, 255]));
+        let image = RgbaImage::from_fn(64, 64, |x, y| {
+            Rgba([x as u8 * 4, y as u8 * 4, (x ^ y) as u8 * 4, 255])
+        });
         let low = encode_image(&image, OutputFormat::Jpeg, 25).unwrap();
         let high = encode_image(&image, OutputFormat::Jpeg, 90).unwrap();
-        assert_eq!(image::load_from_memory(&low).unwrap().dimensions(), (64, 64));
-        assert_eq!(image::load_from_memory(&high).unwrap().dimensions(), (64, 64));
+        assert_eq!(
+            image::load_from_memory(&low).unwrap().dimensions(),
+            (64, 64)
+        );
+        assert_eq!(
+            image::load_from_memory(&high).unwrap().dimensions(),
+            (64, 64)
+        );
         assert_ne!(low, high);
     }
 
     #[test]
     fn append_cleanup_selects_stale_generated_and_legacy_files() {
         let keep = vec!["gmcm-plugin-codex.png".to_string()];
-        let files = ["gmcm-plugin-codex.png", "gmcm-plugin-codex.jpg", "gmcm-plugin-kimi.png", "codex.jpg", "family.jpg", "bootxp.gif"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let files = [
+            "gmcm-plugin-codex.png",
+            "gmcm-plugin-codex.jpg",
+            "gmcm-plugin-kimi.png",
+            "codex.jpg",
+            "family.jpg",
+            "bootxp.gif",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
         assert_eq!(
             select_cleanup_victims(files, ImageMode::Append, &keep),
             ["gmcm-plugin-codex.jpg", "gmcm-plugin-kimi.png", "codex.jpg"]
@@ -483,13 +508,27 @@ mod tests {
     #[test]
     fn only_stats_cleanup_selects_every_non_kept_image() {
         let keep = vec!["gmcm-plugin-codex.png".to_string()];
-        let files = ["gmcm-plugin-codex.png", "gmcm-plugin-codex.jpg", "gmcm-plugin-kimi.png", "codex.jpg", "family.jpg", "bootxp.gif", "notes.txt"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let files = [
+            "gmcm-plugin-codex.png",
+            "gmcm-plugin-codex.jpg",
+            "gmcm-plugin-kimi.png",
+            "codex.jpg",
+            "family.jpg",
+            "bootxp.gif",
+            "notes.txt",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
         assert_eq!(
             select_cleanup_victims(files, ImageMode::OnlyStats, &keep),
-            ["gmcm-plugin-codex.jpg", "gmcm-plugin-kimi.png", "codex.jpg", "family.jpg", "bootxp.gif"]
+            [
+                "gmcm-plugin-codex.jpg",
+                "gmcm-plugin-kimi.png",
+                "codex.jpg",
+                "family.jpg",
+                "bootxp.gif"
+            ]
         );
     }
 
@@ -508,9 +547,12 @@ mod tests {
 
     #[test]
     fn cleanup_aborts_on_filelist_http_error() {
-        let response = "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+        let response =
+            "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
         let (host, server) = test_server(vec![response]);
-        assert!(prepare_images(&host, ImageMode::Append, 5, OutputFormat::Png, &["codex"]).is_err());
+        assert!(
+            prepare_images(&host, ImageMode::Append, 5, OutputFormat::Png, &["codex"]).is_err()
+        );
         let requests = server.join().unwrap();
         assert_eq!(requests.len(), 1);
         assert!(requests[0].starts_with("GET /filelist?dir=/image/ HTTP/1.1"));
@@ -527,12 +569,18 @@ mod tests {
 
     #[test]
     fn parses_bare_line_filelist() {
-        assert_eq!(parse_filelist("bootxp.gif\n\n stats.jpg \r\n"), ["bootxp.gif", "stats.jpg"]);
+        assert_eq!(
+            parse_filelist("bootxp.gif\n\n stats.jpg \r\n"),
+            ["bootxp.gif", "stats.jpg"]
+        );
     }
 
     #[test]
     fn keeps_configured_number_of_newest_backup_directories() {
-        let root = std::env::temp_dir().join(format!("geekmagic-backup-retention-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "geekmagic-backup-retention-test-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         let empty = root.join("20260731-120000");
         fs::create_dir_all(&empty).unwrap();

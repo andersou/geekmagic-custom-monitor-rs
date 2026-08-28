@@ -72,7 +72,6 @@ impl Plugin for Disk {
 }
 
 impl UiPlugin for Disk {
-
     fn collect(&mut self) -> Result<()> {
         self.info = Some(get_disk_info()?);
         Ok(())

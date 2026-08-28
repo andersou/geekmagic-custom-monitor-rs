@@ -244,7 +244,8 @@ fn run_cycle(
     } else {
         let host = args.host.as_ref().expect("host checked at startup");
         let album_theme = device.as_ref().map(|d| d.album_theme).unwrap_or(3);
-        let refs: Vec<(&str, &RgbaImage)> = screens.iter().map(|(name, image)| (*name, image)).collect();
+        let refs: Vec<(&str, &RgbaImage)> =
+            screens.iter().map(|(name, image)| (*name, image)).collect();
         if let Err(e) = upload::upload_screens(
             host,
             album_theme,
@@ -462,7 +463,6 @@ mod tests {
         }
     }
 
-
     impl UiPlugin for Stub {
         fn collect(&mut self) -> Result<()> {
             unreachable!("record_outcome does not collect")
@@ -524,14 +524,7 @@ mod tests {
         assert_eq!(failures["stub"], 6);
         let screen = RgbaImage::new(240, 240);
         assert!(
-            record_outcome(
-                &mut failures,
-                &plugin,
-                Ok(("stub", screen)),
-                5,
-                &mut report
-            )
-            .is_some()
+            record_outcome(&mut failures, &plugin, Ok(("stub", screen)), 5, &mut report).is_some()
         );
         assert!(!failures.contains_key("stub"));
         assert_eq!(report.failed.len(), 6);

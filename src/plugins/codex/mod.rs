@@ -389,7 +389,6 @@ impl Plugin for Codex {
 }
 
 impl UiPlugin for Codex {
-
     fn collect(&mut self) -> Result<()> {
         let mut rpc = CodexRpc::start()?;
         rpc.initialize()?;
