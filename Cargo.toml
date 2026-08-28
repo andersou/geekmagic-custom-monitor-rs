@@ -1,6 +1,6 @@
 [package]
 name = "geekmagic-custom-monitor-rs"
-version = "0.1.0"
+version = "0.1.1"
 description = "Extensible Rust monitors for GeekMagic SmallTV displays"
 edition = "2024"
 
