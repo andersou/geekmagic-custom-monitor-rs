@@ -29,6 +29,7 @@ fn remove_config_root(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(not(target_os = "windows"), test))]
 fn remove_file_now(path: &Path) -> Result<()> {
     if path.exists() {
         std::fs::remove_file(path)
