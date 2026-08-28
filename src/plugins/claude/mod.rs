@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
+#[cfg(not(windows))]
 use claude_code_stats::source::{SourceError, UsageSource, oauth::OauthSource};
+#[cfg(not(windows))]
 use claude_code_stats::source::{fetch_with_failover, web::WebSource};
+#[cfg(not(windows))]
 use claude_code_stats::types::to_usage_window;
 use image::{ImageFormat, RgbaImage};
 use serde::Deserialize;
@@ -61,6 +64,7 @@ fn ensure_pace(window: &mut UsageWindow, window_minutes: f64) {
         });
 }
 
+#[cfg(not(windows))]
 pub fn fetch_stats() -> Result<ActiveData> {
     // Bypass the crate's collect_widget_payload_json: its private cache layer
     // hardcodes CliProbeSource, whose PTY probe double-closes the master fd and
@@ -88,13 +92,26 @@ pub fn fetch_stats() -> Result<ActiveData> {
     Ok(data)
 }
 
+#[cfg(windows)]
+pub fn fetch_stats() -> Result<ActiveData> {
+    anyhow::bail!(
+        "the Claude usage plugin is unavailable on Windows because claude-code-stats does not support Windows"
+    )
+}
+
 /// Query only the OAuth source so a later web/CLI fallback cannot overwrite an
 /// OAuth 401 in claude-code-stats' aggregate error payload.
+#[cfg(not(windows))]
 fn oauth_is_unauthorized() -> bool {
     matches!(
         OauthSource.try_fetch(),
         Err(SourceError::Failed(error)) if error.to_string().contains("status 401")
     )
+}
+
+#[cfg(windows)]
+fn oauth_is_unauthorized() -> bool {
+    false
 }
 
 /// Ask Claude Code to attempt delegated OAuth renewal. The upstream crate uses
