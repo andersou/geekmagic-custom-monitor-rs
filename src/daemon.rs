@@ -84,13 +84,41 @@ fn macos_plist() -> Result<String> {
     Ok(format!("{home}/Library/LaunchAgents/{MACOS_LABEL}.plist"))
 }
 
-/// Idempotent: bootout first, ignore failure (not loaded yet).
+/// launchd starts gui agents with PATH=/usr/bin:/bin:/usr/sbin:/sbin, hiding
+/// Homebrew, ~/.local/bin and friends. Plugins shell out (the Claude Code CLI
+/// renews the OAuth token), so the daemon is given the same environment as the
+/// interactive shell that enabled it.
+#[cfg(target_os = "macos")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Idempotent: bootout first, ignore failure (not loaded yet). `launchctl
+/// bootout` returns before the domain forgets the label, and bootstrapping a
+/// label that is still registered fails with "Input/output error" (5), so wait
+/// for the service to disappear.
 #[cfg(target_os = "macos")]
 fn macos_bootout(uid: &str) {
     let _ = std::process::Command::new("launchctl")
         .args(["bootout", &format!("gui/{uid}/{MACOS_LABEL}")])
         .stderr(std::process::Stdio::null())
         .status();
+    for _ in 0..50 {
+        let still_loaded = std::process::Command::new("launchctl")
+            .args(["print", &format!("gui/{uid}/{MACOS_LABEL}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !still_loaded {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// Parse `launchctl print` output into (running, pid).
@@ -126,6 +154,10 @@ fn enable_impl() -> Result<()> {
 
     macos_bootout(&uid);
 
+    let path = std::env::var("PATH").unwrap_or_default();
+    let user = std::env::var("USER").unwrap_or_default();
+    let home = std::env::var("HOME").context("HOME not set")?;
+
     let contents = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -138,6 +170,15 @@ fn enable_impl() -> Result<()> {
         <string>{}</string>
         <string>run</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{}</string>
+        <key>HOME</key>
+        <string>{}</string>
+        <key>USER</key>
+        <string>{}</string>
+    </dict>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>
@@ -149,7 +190,10 @@ fn enable_impl() -> Result<()> {
 </dict>
 </plist>
 "#,
-        exe.display()
+        xml_escape(&exe.display().to_string()),
+        xml_escape(&path),
+        xml_escape(&home),
+        xml_escape(&user)
     );
     std::fs::write(&plist, contents).with_context(|| format!("failed to write {plist}"))?;
     println!("wrote {plist}");
@@ -233,8 +277,11 @@ fn enable_impl() -> Result<()> {
     let unit = format!("{home}/.config/systemd/user/{LINUX_NAME}");
     let exe = std::env::current_exe().context("failed to resolve current exe")?;
 
+    // systemd --user services get a minimal PATH; plugins shell out (the
+    // Claude Code CLI renews the OAuth token), so inherit the enabling shell's.
+    let path = std::env::var("PATH").unwrap_or_default();
     let contents = format!(
-        "[Unit]\nDescription=geekmagic-custom-monitors\n\n[Service]\nExecStart={} run\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=geekmagic-custom-monitors\n\n[Service]\nExecStart={} run\nEnvironment=PATH={path}\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
         exe.display()
     );
     if let Some(parent) = std::path::Path::new(&unit).parent() {

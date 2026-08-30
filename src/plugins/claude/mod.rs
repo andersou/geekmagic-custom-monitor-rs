@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 #[cfg(not(windows))]
-use claude_code_stats::source::{SourceError, UsageSource, oauth::OauthSource};
-#[cfg(not(windows))]
-use claude_code_stats::source::{fetch_with_failover, web::WebSource};
+use claude_code_stats::source::{SourceError, UsageSource, oauth::OauthSource, web::WebSource};
 #[cfg(not(windows))]
 use claude_code_stats::types::to_usage_window;
 use image::{ImageFormat, RgbaImage};
 use serde::Deserialize;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::plugin::{Plugin, PluginKind, UiPlugin};
 use crate::plugins::agents_usage_ui::{self, UsageWindowData};
@@ -23,6 +23,22 @@ fn icon() -> &'static RgbaImage {
 }
 
 const MAX_CLI_REFRESH_RETRIES: u32 = 2;
+
+/// The usage endpoint answers 429 for a long while once it is tripped, and each
+/// daemon cycle would otherwise keep the limit alive. Stop calling it until the
+/// cooldown expires.
+const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+
+/// Absolute candidates for the Claude Code CLI, tried when PATH lookup fails.
+/// Daemons started by launchd or systemd inherit a minimal PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin` under launchd), so the CLI that renews the
+/// OAuth token is invisible to them even though an interactive run finds it.
+const CLI_FALLBACK_HOME_RELATIVE: &[&str] = &[
+    ".claude/local/claude",
+    ".local/bin/claude",
+    ".bun/bin/claude",
+];
+const CLI_FALLBACK_ABSOLUTE: &[&str] = &["/opt/homebrew/bin/claude", "/usr/local/bin/claude"];
 
 #[derive(Debug, Deserialize)]
 pub struct ActiveData {
@@ -47,6 +63,31 @@ pub struct PaceInfo {
     pub eta_minutes: Option<f64>,
 }
 
+/// A failed usage fetch plus the HTTP status that caused it, so the caller can
+/// tell "token expired" (renew and retry) from "rate limited" (back off).
+pub struct FetchError {
+    pub error: anyhow::Error,
+    pub status: Option<u16>,
+}
+
+impl FetchError {
+    fn new(error: anyhow::Error) -> Self {
+        let status = http_status(&error);
+        Self { error, status }
+    }
+}
+
+/// Pull the HTTP status out of claude-code-stats' error text
+/// ("API request failed with status 401 Unauthorized: ...").
+fn http_status(error: &anyhow::Error) -> Option<u16> {
+    let text = error.to_string();
+    let rest = text.split("status ").nth(1)?;
+    rest.split(|c: char| !c.is_ascii_digit())
+        .find(|part| !part.is_empty())?
+        .parse()
+        .ok()
+}
+
 /// Fill in pace data for windows the API left blank.
 #[cfg(not(windows))]
 fn ensure_pace(window: &mut UsageWindow, window_minutes: f64) {
@@ -66,22 +107,56 @@ fn ensure_pace(window: &mut UsageWindow, window_minutes: f64) {
 }
 
 #[cfg(not(windows))]
-pub fn fetch_stats() -> Result<ActiveData> {
+fn source_error(name: &str, error: SourceError) -> Option<anyhow::Error> {
+    match error {
+        SourceError::NotAvailable(reason) => {
+            eprintln!("claude: {name} skipped: {reason}");
+            None
+        }
+        SourceError::Failed(error) => {
+            eprintln!("claude: {name} failed: {error}");
+            Some(error)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn fetch_stats() -> Result<ActiveData, FetchError> {
     // Bypass the crate's collect_widget_payload_json: its private cache layer
     // hardcodes CliProbeSource, whose PTY probe double-closes the master fd and
     // aborts the whole process (observed: "IO Safety violation: owned file
-    // descriptor already closed"). Fetch via the public failover with the OAuth
-    // and Web sources only; the skipped 4-minute cache never hits at our >=300s
-    // daemon intervals anyway.
+    // descriptor already closed"). Fetch via the public sources only; the
+    // skipped 4-minute cache never hits at our >=300s daemon intervals anyway.
+    //
+    // The failover is open-coded instead of using fetch_with_failover because
+    // that helper only returns the *last* failing source's error, which hides
+    // an OAuth 401 behind a later web failure. Detecting the 401 from a second
+    // probe request (the previous approach) doubled the request rate against an
+    // endpoint that answers 429 when hammered.
     let now = chrono::Utc::now();
-    let sources: Vec<&dyn UsageSource> = vec![&OauthSource, &WebSource];
-    let (usage, _source) = fetch_with_failover(&sources)?;
+    let usage = match OauthSource.try_fetch() {
+        Ok(usage) => usage,
+        Err(oauth_error) => {
+            let oauth_error = source_error("oauth_api", oauth_error);
+            match WebSource.try_fetch() {
+                Ok(usage) => usage,
+                Err(web_error) => {
+                    let web_error = source_error("web_api", web_error);
+                    return Err(FetchError::new(oauth_error.or(web_error).unwrap_or_else(
+                        || anyhow::anyhow!("no Claude usage source available"),
+                    )));
+                }
+            }
+        }
+    };
+
     let mut data: ActiveData = serde_json::from_value(serde_json::json!({
         "five_hour": usage.five_hour.as_ref().map(|w| to_usage_window(w, now, Some(300.0))),
         "seven_day": usage.seven_day.as_ref().map(|w| to_usage_window(w, now, Some(10080.0))),
         "updated_at": now.to_rfc3339(),
     }))
-    .context("failed to map claude-code-stats usage")?;
+    .context("failed to map claude-code-stats usage")
+    .map_err(FetchError::new)?;
 
     // Compute pace locally if not provided.
     if let Some(window) = &mut data.five_hour {
@@ -94,34 +169,48 @@ pub fn fetch_stats() -> Result<ActiveData> {
 }
 
 #[cfg(windows)]
-pub fn fetch_stats() -> Result<ActiveData> {
-    anyhow::bail!(
+pub fn fetch_stats() -> Result<ActiveData, FetchError> {
+    Err(FetchError::new(anyhow::anyhow!(
         "the Claude usage plugin is unavailable on Windows because claude-code-stats does not support Windows"
-    )
+    )))
 }
 
-/// Query only the OAuth source so a later web/CLI fallback cannot overwrite an
-/// OAuth 401 in claude-code-stats' aggregate error payload.
-#[cfg(not(windows))]
-fn oauth_is_unauthorized() -> bool {
-    matches!(
-        OauthSource.try_fetch(),
-        Err(SourceError::Failed(error)) if error.to_string().contains("status 401")
-    )
+fn path_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path).map(|dir| dir.join("claude")));
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        candidates.extend(
+            CLI_FALLBACK_HOME_RELATIVE
+                .iter()
+                .map(|relative| home.join(relative)),
+        );
+    }
+    candidates.extend(CLI_FALLBACK_ABSOLUTE.iter().map(PathBuf::from));
+    candidates
 }
 
-#[cfg(windows)]
-fn oauth_is_unauthorized() -> bool {
-    false
+fn resolve_binary<I>(candidates: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
 /// Ask Claude Code to attempt delegated OAuth renewal. The upstream crate uses
 /// the same invocation but describes renewal as potential, not guaranteed.
 fn cli_refresh() -> Result<()> {
-    let output = std::process::Command::new("claude")
+    let binary = resolve_binary(path_candidates()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Claude Code CLI not found for OAuth renewal (PATH={})",
+            std::env::var("PATH").unwrap_or_default()
+        )
+    })?;
+    let output = std::process::Command::new(&binary)
         .arg("--version")
         .output()
-        .context("failed to run Claude Code CLI for OAuth renewal")?;
+        .with_context(|| format!("failed to run {} for OAuth renewal", binary.display()))?;
     if !output.status.success() {
         anyhow::bail!(
             "Claude Code CLI OAuth renewal exited with {}",
@@ -131,38 +220,50 @@ fn cli_refresh() -> Result<()> {
     Ok(())
 }
 
-fn fetch_with_cli_refresh<F, U, R>(
-    mut fetch: F,
-    mut unauthorized: U,
-    mut refresh: R,
-) -> Result<ActiveData>
+fn fetch_with_cli_refresh<F, R>(mut fetch: F, mut refresh: R) -> Result<ActiveData, FetchError>
 where
-    F: FnMut() -> Result<ActiveData>,
-    U: FnMut() -> bool,
+    F: FnMut() -> Result<ActiveData, FetchError>,
     R: FnMut() -> Result<()>,
 {
     let mut retries = 0;
     loop {
         match fetch() {
             Ok(data) => return Ok(data),
-            Err(error) => {
-                if retries == MAX_CLI_REFRESH_RETRIES || !unauthorized() {
-                    return Err(error);
+            Err(failure) => {
+                if retries == MAX_CLI_REFRESH_RETRIES || failure.status != Some(401) {
+                    return Err(failure);
                 }
-                refresh()?;
+                if let Err(error) = refresh() {
+                    return Err(FetchError {
+                        error: error
+                            .context("Claude OAuth token rejected (401) and renewal failed"),
+                        status: failure.status,
+                    });
+                }
                 retries += 1;
             }
         }
     }
 }
 
+/// Remaining cooldown, or None once the deadline passed.
+fn cooldown_remaining(until: Option<Instant>, now: Instant) -> Option<Duration> {
+    until
+        .and_then(|until| until.checked_duration_since(now))
+        .filter(|remaining| !remaining.is_zero())
+}
+
 pub struct Claude {
     data: Option<ActiveData>,
+    rate_limited_until: Option<Instant>,
 }
 
 impl Claude {
     pub fn new() -> Self {
-        Self { data: None }
+        Self {
+            data: None,
+            rate_limited_until: None,
+        }
     }
 }
 
@@ -178,12 +279,26 @@ impl Plugin for Claude {
 
 impl UiPlugin for Claude {
     fn collect(&mut self) -> Result<()> {
-        self.data = Some(fetch_with_cli_refresh(
-            fetch_stats,
-            oauth_is_unauthorized,
-            cli_refresh,
-        )?);
-        Ok(())
+        if let Some(remaining) = cooldown_remaining(self.rate_limited_until, Instant::now()) {
+            anyhow::bail!(
+                "Claude usage API rate limited (429); next attempt in {}s",
+                remaining.as_secs()
+            );
+        }
+        self.rate_limited_until = None;
+
+        match fetch_with_cli_refresh(fetch_stats, cli_refresh) {
+            Ok(data) => {
+                self.data = Some(data);
+                Ok(())
+            }
+            Err(failure) => {
+                if failure.status == Some(429) {
+                    self.rate_limited_until = Some(Instant::now() + RATE_LIMIT_COOLDOWN);
+                }
+                Err(failure.error)
+            }
+        }
     }
 
     fn render(&self) -> Result<RgbaImage> {
@@ -232,6 +347,10 @@ mod tests {
         }
     }
 
+    fn failure(message: &str) -> FetchError {
+        FetchError::new(anyhow!("{message}"))
+    }
+
     #[test]
     fn embedded_icon_is_valid() {
         let icon = icon();
@@ -240,22 +359,34 @@ mod tests {
     }
 
     #[test]
+    fn http_status_is_parsed_from_upstream_error_text() {
+        assert_eq!(
+            http_status(&anyhow!(
+                "API request failed with status 401 Unauthorized: {{\"type\":\"error\"}}"
+            )),
+            Some(401)
+        );
+        assert_eq!(
+            http_status(&anyhow!(
+                "API request failed with status 429 Too Many Requests"
+            )),
+            Some(429)
+        );
+        assert_eq!(http_status(&anyhow!("network unavailable")), None);
+    }
+
+    #[test]
     fn cli_retry_refreshes_after_oauth_401_and_succeeds() {
         let mut fetches = 0;
-        let mut probes = 0;
         let mut refreshes = 0;
         let result = fetch_with_cli_refresh(
             || {
                 fetches += 1;
                 if fetches == 1 {
-                    Err(anyhow!("aggregate failure"))
+                    Err(failure("API request failed with status 401 Unauthorized"))
                 } else {
                     Ok(active_data())
                 }
-            },
-            || {
-                probes += 1;
-                true
             },
             || {
                 refreshes += 1;
@@ -263,22 +394,17 @@ mod tests {
             },
         );
         assert!(result.is_ok());
-        assert_eq!((fetches, probes, refreshes), (2, 1, 1));
+        assert_eq!((fetches, refreshes), (2, 1));
     }
 
     #[test]
     fn cli_retry_stops_after_two_refreshes() {
         let mut fetches = 0;
-        let mut probes = 0;
         let mut refreshes = 0;
         let error = fetch_with_cli_refresh(
             || {
                 fetches += 1;
-                Err(anyhow!("aggregate failure"))
-            },
-            || {
-                probes += 1;
-                true
+                Err(failure("API request failed with status 401 Unauthorized"))
             },
             || {
                 refreshes += 1;
@@ -286,19 +412,20 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert_eq!(error.to_string(), "aggregate failure");
-        assert_eq!((fetches, probes, refreshes), (3, 2, 2));
+        assert_eq!(error.status, Some(401));
+        assert_eq!((fetches, refreshes), (3, 2));
     }
 
     #[test]
-    fn non_401_does_not_invoke_cli_refresh() {
-        let mut probes = 0;
+    fn rate_limit_does_not_invoke_cli_refresh() {
+        let mut fetches = 0;
         let mut refreshes = 0;
         let error = fetch_with_cli_refresh(
-            || Err(anyhow!("network unavailable")),
             || {
-                probes += 1;
-                false
+                fetches += 1;
+                Err(failure(
+                    "API request failed with status 429 Too Many Requests",
+                ))
             },
             || {
                 refreshes += 1;
@@ -306,7 +433,54 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert_eq!(error.to_string(), "network unavailable");
-        assert_eq!((probes, refreshes), (1, 0));
+        assert_eq!(error.status, Some(429));
+        assert_eq!((fetches, refreshes), (1, 0));
+    }
+
+    #[test]
+    fn refresh_failure_is_reported_with_the_401_context() {
+        let error = fetch_with_cli_refresh(
+            || Err(failure("API request failed with status 401 Unauthorized")),
+            || Err(anyhow!("Claude Code CLI not found for OAuth renewal")),
+        )
+        .unwrap_err();
+        let text = format!("{:#}", error.error);
+        assert!(text.contains("renewal failed"), "{text}");
+        assert!(text.contains("CLI not found"), "{text}");
+    }
+
+    #[test]
+    fn rate_limit_cooldown_blocks_then_expires() {
+        let now = Instant::now();
+        let until = now + Duration::from_secs(60);
+        assert_eq!(
+            cooldown_remaining(Some(until), now).map(|d| d.as_secs()),
+            Some(60)
+        );
+        assert!(cooldown_remaining(Some(until), until).is_none());
+        assert!(cooldown_remaining(None, now).is_none());
+    }
+
+    #[test]
+    fn cli_is_resolved_from_absolute_fallbacks_when_path_misses() {
+        let missing = PathBuf::from("/nonexistent/bin/claude");
+        assert!(resolve_binary(vec![missing.clone()]).is_none());
+        assert_eq!(
+            resolve_binary(vec![missing, PathBuf::from("/bin/sh")]),
+            Some(PathBuf::from("/bin/sh"))
+        );
+    }
+
+    #[test]
+    fn cli_candidates_cover_path_and_fallbacks() {
+        let candidates = path_candidates();
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.ends_with("claude"))
+        );
+        for absolute in CLI_FALLBACK_ABSOLUTE {
+            assert!(candidates.contains(&PathBuf::from(absolute)));
+        }
     }
 }
