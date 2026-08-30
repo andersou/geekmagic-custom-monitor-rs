@@ -465,9 +465,12 @@ mod tests {
     fn cli_is_resolved_from_absolute_fallbacks_when_path_misses() {
         let missing = PathBuf::from("/nonexistent/bin/claude");
         assert!(resolve_binary(vec![missing.clone()]).is_none());
+        // The running test binary is a file guaranteed to exist on every
+        // platform; /bin/sh is not, which broke the Windows CI build.
+        let existing = std::env::current_exe().unwrap();
         assert_eq!(
-            resolve_binary(vec![missing, PathBuf::from("/bin/sh")]),
-            Some(PathBuf::from("/bin/sh"))
+            resolve_binary(vec![missing, existing.clone()]),
+            Some(existing)
         );
     }
 
