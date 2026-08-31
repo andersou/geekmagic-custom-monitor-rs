@@ -162,11 +162,11 @@ A device file is deleted only after its local backup has been saved successfully
          |                      |                      |                      v
          +----------------------+---------uses---------+           +------------------+
                                 |                                  |  disk/render.rs  |
-                                v                                  | render disk.jpg  |
+                                v                                  | renders Disk UI  |
 +-------------------------------------+                            +------------------+
 |    plugins/agents_usage_ui/mod.rs   |                                      |
-| renderer: claude.jpg, codex.jpg and |                                      |
-|             kimi.jpg                |                                      |
+| renderer for Claude Code, Codex and |                                      |
+|             Kimi Code               |                                      |
 +-------------------------------------+                                      |
                     |                                                        |
                     v                                                        |
@@ -266,6 +266,12 @@ Force parallel or sequential rendering:
 geekmagic-monitors run --parallel --once
 geekmagic-monitors run --no-parallel --once
 ```
+
+## Example screens
+
+| Claude Code | Codex | Disk | Kimi Code |
+| --- | --- | --- | --- |
+| ![Claude Code example](images/claude.png) | ![Codex example](images/codex.png) | ![Disk example](images/disk.png) | ![Kimi Code example](images/kimi.png) |
 
 ## Daemon
 
