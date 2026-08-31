@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "geekmagic-custom-monitor-rs"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "ab_glyph",
  "anyhow",
