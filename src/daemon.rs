@@ -158,6 +158,11 @@ fn enable_impl() -> Result<()> {
     let user = std::env::var("USER").unwrap_or_default();
     let home = std::env::var("HOME").context("HOME not set")?;
 
+    // launchd creates the log file but not missing parent directories.
+    let log_dir = format!("{home}/Library/Logs");
+    std::fs::create_dir_all(&log_dir).with_context(|| format!("failed to create {log_dir}"))?;
+    let log_path = format!("{log_dir}/geekmagic-custom-monitors.log");
+
     let contents = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -184,16 +189,18 @@ fn enable_impl() -> Result<()> {
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/geekmagic-custom-monitors.log</string>
+    <string>{}</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/geekmagic-custom-monitors.log</string>
+    <string>{}</string>
 </dict>
 </plist>
 "#,
         xml_escape(&exe.display().to_string()),
         xml_escape(&path),
         xml_escape(&home),
-        xml_escape(&user)
+        xml_escape(&user),
+        xml_escape(&log_path),
+        xml_escape(&log_path)
     );
     std::fs::write(&plist, contents).with_context(|| format!("failed to write {plist}"))?;
     println!("wrote {plist}");
@@ -204,6 +211,7 @@ fn enable_impl() -> Result<()> {
         .context("failed to run launchctl bootstrap")?;
     anyhow::ensure!(status.success(), "launchctl bootstrap failed");
     println!("launchctl bootstrap gui/{uid} {plist}");
+    println!("daemon log: {log_path}");
     Ok(())
 }
 

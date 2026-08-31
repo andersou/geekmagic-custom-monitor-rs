@@ -1,10 +1,11 @@
 //! Last-cycle outcome written by `run` every cycle and read by `daemon status`.
-//! Cross-platform substitute for log scraping (the macOS log lives in /tmp and
-//! vanishes on reboot; Linux logs land in journald; Windows has none).
+//! Cross-platform substitute for log scraping (the macOS log lives in
+//! ~/Library/Logs; Linux logs land in journald; Windows has none).
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use log::warn;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,7 +44,7 @@ pub fn write(status: &DaemonStatus) {
         Ok(())
     })();
     if let Err(error) = result {
-        eprintln!("warning: could not persist daemon status: {error:#}");
+        warn!("could not persist daemon status: {error:#}");
     }
 }
 

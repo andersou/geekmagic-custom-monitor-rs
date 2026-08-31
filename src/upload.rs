@@ -6,6 +6,7 @@ use image::{
     ExtendedColorType, ImageEncoder, RgbaImage,
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
 };
+use log::{info, warn};
 use reqwest::blocking::multipart;
 
 pub const DEFAULT_JPEG_QUALITY: u8 = 75;
@@ -165,7 +166,7 @@ fn cleanup_images(
 ) -> Result<()> {
     let backup_root = crate::config::config_root()?.join("backups");
     if let Err(error) = prune_backups(&backup_root, backup_retention) {
-        eprintln!("image cleanup: failed to prune old backups: {error:#}");
+        warn!("image cleanup: failed to prune old backups: {error:#}");
     }
     let body = client
         .get(format!("{base}/filelist?dir=/image/"))
@@ -192,7 +193,7 @@ fn cleanup_images(
         {
             Ok(bytes) => bytes,
             Err(error) => {
-                eprintln!("image cleanup: failed to back up {name}: {error}; keeping device file");
+                warn!("image cleanup: failed to back up {name}: {error}; keeping device file");
                 continue;
             }
         };
@@ -205,7 +206,7 @@ fn cleanup_images(
 
         let backup_path = backup_dir.join(&name);
         if let Err(error) = fs::write(&backup_path, &bytes) {
-            eprintln!(
+            warn!(
                 "image cleanup: failed to write backup {}: {error}; keeping device file",
                 backup_path.display()
             );
@@ -223,13 +224,13 @@ fn cleanup_images(
             .and_then(reqwest::blocking::Response::error_for_status)
         {
             Ok(_) => removed += 1,
-            Err(error) => eprintln!("image cleanup: failed to delete {name}: {error}"),
+            Err(error) => warn!("image cleanup: failed to delete {name}: {error}"),
         }
     }
 
     if backed_up == 0 {
         if created_backup_dir && let Err(error) = fs::remove_dir(&backup_dir) {
-            eprintln!(
+            warn!(
                 "image cleanup: failed to remove empty backup dir {}: {error}",
                 backup_dir.display()
             );
@@ -238,13 +239,12 @@ fn cleanup_images(
     }
 
     if let Err(error) = prune_backups(&backup_root, backup_retention) {
-        eprintln!("image cleanup: failed to prune old backups: {error:#}");
+        warn!("image cleanup: failed to prune old backups: {error:#}");
     }
 
     if removed > 0 {
-        println!(
-            "[{}] image cleanup: removed {removed} image(s), backup at {}",
-            Local::now().format("%H:%M:%S"),
+        info!(
+            "image cleanup: removed {removed} image(s), backup at {}",
             backup_dir.display()
         );
     }

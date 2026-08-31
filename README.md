@@ -301,6 +301,18 @@ geekmagic-monitors daemon restart
 
 The outcome shown by `daemon status` is written by every run to `~/.config/geekmagic-custom-monitors/status.json`.
 
+### Logs
+
+Every daemon-runtime message is a log record prefixed with the local date, time, and level:
+
+```text
+[2026-08-31 11:24:02 INFO] pushed 4 screen(s) to 192.168.1.201
+```
+
+On macOS the daemon writes them to `~/Library/Logs/geekmagic-custom-monitors.log`; on Linux they land in journald (`journalctl --user -u geekmagic-custom-monitors`). Re-run `daemon enable` after upgrading from a version that logged to `/tmp`: `daemon restart` reuses the old service definition.
+
+The default level is `info`; set `RUST_LOG` to change it (`RUST_LOG=warn` for failures only, `RUST_LOG=debug` for more detail).
+
 ## Uninstall
 
 Remove the tool completely:

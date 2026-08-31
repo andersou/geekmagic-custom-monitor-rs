@@ -16,6 +16,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use image::RgbaImage;
+use log::{error, info, warn};
 
 use crate::device::Model;
 use crate::plugin::UiPlugin;
@@ -108,8 +109,19 @@ struct RuntimeArgs {
     failure_threshold: u32,
 }
 
-fn now() -> String {
-    chrono::Local::now().format("%H:%M:%S").to_string()
+fn init_logger() {
+    use std::io::Write;
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {}] {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                record.level(),
+                record.args()
+            )
+        })
+        .init();
 }
 
 fn record_outcome(
@@ -135,18 +147,16 @@ fn record_outcome(
                 *count = (*count).saturating_add(1);
                 *count
             };
-            eprintln!(
-                "[{}] plugin '{}' failed ({count}/{threshold}): {error:#}",
-                now(),
+            warn!(
+                "plugin '{}' failed ({count}/{threshold}): {error:#}",
                 plugin.name()
             );
             if count < threshold {
                 return None;
             }
             if count == threshold {
-                eprintln!(
-                    "[{}] plugin '{}': circuit breaker on, showing error screen",
-                    now(),
+                warn!(
+                    "plugin '{}': circuit breaker on, showing error screen",
                     plugin.name()
                 );
             }
@@ -226,7 +236,7 @@ fn run_cycle(
     status.failed = report.failed;
     status.device = Some(device_label(device));
     if screens.is_empty() {
-        eprintln!("[{}] all plugins failed; skipping upload this cycle", now());
+        warn!("all plugins failed; skipping upload this cycle");
         status.upload = Some("skipped: all plugins failed".to_string());
         return Ok(());
     }
@@ -238,7 +248,7 @@ fn run_cycle(
             let path = format!("{dir}/{filename}");
             let bytes = upload::encode_image(img, args.output_format, args.jpeg_quality)?;
             std::fs::write(&path, bytes)?;
-            println!("[{}] saved {path}", now());
+            info!("saved {path}");
         }
         status.upload = Some(format!("saved {} screen(s) to {dir}", screens.len()));
     } else {
@@ -258,15 +268,15 @@ fn run_cycle(
             return Err(e);
         }
         status.upload = Some(format!("pushed {} screen(s) to {host}", screens.len()));
-        println!("[{}] pushed {} screen(s) to {host}", now(), screens.len());
+        info!("pushed {} screen(s) to {host}", screens.len());
     }
     Ok(())
 }
 
 fn log_device(d: &device::DeviceInfo) {
     match &d.firmware {
-        Some(fw) => println!("Device: {fw}, album theme {}", d.album_theme),
-        None => println!(
+        Some(fw) => info!("Device: {fw}, album theme {}", d.album_theme),
+        None => warn!(
             "device detection failed (model {:?}), will retry each cycle",
             d.model
         ),
@@ -293,7 +303,7 @@ fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
         return Err(anyhow!("no plugins enabled"));
     }
     let names: Vec<&str> = plugins.iter().map(|p| p.name()).collect();
-    println!("enabled plugins: {}", names.join(", "));
+    info!("enabled plugins: {}", names.join(", "));
 
     let mut status = status::DaemonStatus {
         version: VERSION.to_string(),
@@ -326,7 +336,7 @@ fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
     if let Some(interval) = args.interval {
         let interval = interval.max(10);
         if let Some(host) = &args.host {
-            println!("Daemon mode: pushing every {interval}s to {host}");
+            info!("Daemon mode: pushing every {interval}s to {host}");
         }
         loop {
             let result = run_cycle(&mut plugins, &args, &mut device, &mut failures, &mut status);
@@ -334,7 +344,7 @@ fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
                 Ok(()) => status.cycle_error = None,
                 Err(error) => {
                     status.cycle_error = Some(format!("{error:#}"));
-                    eprintln!("[{}] Error: {error:#}", now());
+                    error!("cycle error: {error:#}");
                 }
             }
             status::write(&status);
@@ -352,6 +362,7 @@ fn run(args: RuntimeArgs, cfg: config::AppConfig) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    init_logger();
     match Cli::parse().cmd {
         Command::Run {
             host,
@@ -375,7 +386,7 @@ fn main() -> Result<()> {
                 .as_deref()
                 .map(|s| {
                     upload::ImageMode::parse(s).unwrap_or_else(|| {
-                        eprintln!("unknown image_mode '{s}', falling back to 'append'");
+                        warn!("unknown image_mode '{s}', falling back to 'append'");
                         upload::ImageMode::Append
                     })
                 })
@@ -385,7 +396,7 @@ fn main() -> Result<()> {
                 .as_deref()
                 .map(|value| {
                     upload::OutputFormat::parse(value).unwrap_or_else(|| {
-                        eprintln!("unknown image_format '{value}', falling back to 'jpg'");
+                        warn!("unknown image_format '{value}', falling back to 'jpg'");
                         upload::OutputFormat::Jpeg
                     })
                 })
@@ -393,7 +404,7 @@ fn main() -> Result<()> {
             let jpeg_quality = match cfg.jpeg_quality {
                 Some(value @ 1..=100) => value as u8,
                 Some(value) => {
-                    eprintln!(
+                    warn!(
                         "jpeg_quality '{value}' must be between 1 and 100, falling back to {}",
                         upload::DEFAULT_JPEG_QUALITY
                     );
@@ -403,7 +414,7 @@ fn main() -> Result<()> {
             };
             let backup_retention = match cfg.backup_retention {
                 Some(0) => {
-                    eprintln!("backup_retention must be at least 1, falling back to 5");
+                    warn!("backup_retention must be at least 1, falling back to 5");
                     5
                 }
                 Some(retention) => retention,
@@ -411,7 +422,7 @@ fn main() -> Result<()> {
             };
             let failure_threshold = match cfg.failure_threshold {
                 Some(0) => {
-                    eprintln!(
+                    warn!(
                         "failure_threshold must be at least 1, falling back to {}",
                         config::DEFAULT_FAILURE_THRESHOLD
                     );
@@ -433,7 +444,14 @@ fn main() -> Result<()> {
                 model: cfg.model.clone(),
                 failure_threshold,
             };
-            run(args, cfg)
+            // Daemon-runtime failures must carry a timestamp like every other
+            // log line, so they bypass anyhow's untimestamped `main` reporting.
+            // launchd's KeepAlive still sees the non-zero exit.
+            if let Err(error) = run(args, cfg) {
+                error!("fatal: {error:#}");
+                std::process::exit(1);
+            }
+            Ok(())
         }
         Command::Setup { config } => setup::run(config.as_deref()),
         Command::Daemon { action } => match action {

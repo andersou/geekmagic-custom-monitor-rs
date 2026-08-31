@@ -2,6 +2,7 @@
 //! device-protocol.md; generalizes the old `album_theme()` helper, which is
 //! deleted.
 
+use log::warn;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +34,7 @@ pub fn detect(
         Some("ultra") => (Model::Ultra, 3),
         Some("pro") => (Model::Pro, 4),
         Some(other) if other != "auto" => {
-            eprintln!("unknown model '{other}', falling back to auto-detect");
+            warn!("unknown model '{other}', falling back to auto-detect");
             probe(client, base)
         }
         _ => probe(client, base),

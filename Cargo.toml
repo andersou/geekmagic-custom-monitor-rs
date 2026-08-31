@@ -16,6 +16,13 @@ sysinfo = "0.36"
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", features = ["clock", "serde"] }
 toml = "1"
+log = "0.4"
+# No default features: env_logger's timestamp support pulls in `jiff`, and this
+# crate formats timestamps with the `chrono` dependency above.
+env_logger = { version = "0.11", default-features = false, features = [
+    "auto-color",
+    "regex",
+] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

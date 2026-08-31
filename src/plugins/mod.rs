@@ -9,6 +9,8 @@ pub mod agents_usage_ui;
 
 use std::collections::HashSet;
 
+use log::warn;
+
 use crate::config::AppConfig;
 use crate::plugin::{Plugin, PluginKind, UiPlugin};
 
@@ -77,7 +79,7 @@ pub fn registry(cfg: &AppConfig) -> Vec<Box<dyn UiPlugin>> {
                 .iter()
                 .find(|d| !names.contains(**d))
             {
-                eprintln!(
+                warn!(
                     "plugin '{}' disabled: depends on '{dep}', which is disabled or unknown",
                     enabled[i].name()
                 );
