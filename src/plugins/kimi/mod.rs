@@ -11,9 +11,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use image::{ImageFormat, RgbaImage};
 use serde::Deserialize;
@@ -241,11 +241,35 @@ fn post_refresh(
     Ok((status, body))
 }
 
+/// Marker for an OAuth `invalid_grant` refresh rejection: the stored refresh
+/// token is dead until the user signs in again, so retrying is pointless.
+#[derive(Debug)]
+struct InvalidGrant;
+
+impl fmt::Display for InvalidGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("run `kimi login` to sign in again")
+    }
+}
+
+impl std::error::Error for InvalidGrant {}
+
+fn is_invalid_grant(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<InvalidGrant>().is_some())
+}
+
 fn refresh_response_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
-    anyhow!(
+    let message = format!(
         "kimi credential refresh failed ({status}): {}",
         body.trim().chars().take(200).collect::<String>()
-    )
+    );
+    if body.contains("invalid_grant") {
+        anyhow::Error::new(InvalidGrant).context(message)
+    } else {
+        anyhow!(message)
+    }
 }
 
 fn apply_refresh(credentials: &mut Value, body: &Value, now_epoch: i64) -> Result<String> {
@@ -416,8 +440,11 @@ fn refresh_cli_token(home: &Path) -> Result<String> {
         .context("kimi CLI credential has no refresh_token; sign in again with the Kimi Code CLI")?
         .to_string();
 
+    // A generous timeout: Kimi refresh tokens are single-use, so a request the
+    // server completes but the client abandons loses the rotated token and
+    // kills the grant (observed with a 10s timeout).
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()
         .context("failed to build Kimi credential refresh HTTP client")?;
     let hosts = oauth_hosts(home);
@@ -437,6 +464,38 @@ fn refresh_cli_token(home: &Path) -> Result<String> {
     let access_token = apply_refresh(&mut credentials, &response, Utc::now().timestamp())?;
     persist_credentials_atomic(&path, &credentials)?;
     Ok(access_token)
+}
+
+/// Skip the network refresh when the stored refresh token already came back
+/// `invalid_grant` and the credential file is unchanged since: the grant is
+/// dead until the user signs in again, and re-posting it every cycle only
+/// hammers the OAuth endpoints. A re-login rewrites the file, which changes
+/// the mtime and re-arms the refresh.
+fn guarded_refresh(
+    home: &Path,
+    rejected: &mut Option<SystemTime>,
+    refresh: impl FnOnce(&Path) -> Result<String>,
+) -> Result<String> {
+    let mtime = fs::metadata(credentials_path(home))
+        .and_then(|meta| meta.modified())
+        .ok();
+    if rejected.is_some() && *rejected == mtime {
+        bail!(
+            "kimi refresh token was rejected (invalid_grant) and the credential file is unchanged; run `kimi login` to sign in again"
+        );
+    }
+    match refresh(home) {
+        Ok(token) => {
+            *rejected = None;
+            Ok(token)
+        }
+        Err(error) => {
+            if is_invalid_grant(&error) {
+                *rejected = mtime;
+            }
+            Err(error)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -624,6 +683,9 @@ pub struct Kimi {
     api_key: Option<String>,
     windows: Vec<UsageWindowData>,
     fetched_at: Option<String>,
+    /// Credential-file mtime whose refresh token was rejected with
+    /// `invalid_grant`; suppresses further refresh attempts until it changes.
+    rejected_credentials: Option<SystemTime>,
 }
 
 impl Kimi {
@@ -632,6 +694,7 @@ impl Kimi {
             api_key,
             windows: Vec::new(),
             fetched_at: None,
+            rejected_credentials: None,
         }
     }
 }
@@ -653,6 +716,8 @@ impl Plugin for Kimi {
 impl UiPlugin for Kimi {
     fn collect(&mut self) -> Result<()> {
         let (mut token, cli_home) = resolve_token(self.api_key.as_deref())?;
+        let rejected = &mut self.rejected_credentials;
+        let mut refresh = |home: &Path| guarded_refresh(home, rejected, refresh_cli_token);
         if let Some(home) = cli_home.as_deref()
             && let Some(credentials) = cli_credentials(home)
         {
@@ -660,11 +725,10 @@ impl UiPlugin for Kimi {
                 .expires_at
                 .is_some_and(|expires_at| expires_at <= Utc::now().timestamp());
             if expired {
-                token = refresh_cli_token(home)?;
+                token = refresh(home)?;
             }
         }
-        let usages =
-            fetch_with_refresh(token, cli_home.as_deref(), fetch_usages, refresh_cli_token)?;
+        let usages = fetch_with_refresh(token, cli_home.as_deref(), fetch_usages, refresh)?;
         let now = Utc::now();
         self.windows = windows(&usages, now)?;
         // The payload carries no "generated at", so the header shows when this
@@ -922,6 +986,78 @@ mod tests {
         );
         assert!(result.is_ok());
         assert_eq!((fetches, refreshes), (2, 1));
+    }
+
+    #[test]
+    fn refresh_error_tags_invalid_grant() {
+        let error = refresh_response_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"error":"invalid_grant","error_description":"The provided authorization grant is invalid"}"#,
+        );
+        assert!(is_invalid_grant(&error));
+        assert!(format!("{error:#}").contains("kimi login"));
+
+        let other = refresh_response_error(reqwest::StatusCode::BAD_GATEWAY, "upstream error");
+        assert!(!is_invalid_grant(&other));
+    }
+
+    #[test]
+    fn invalid_grant_suppresses_refresh_until_credentials_change() {
+        let root = temporary_dir("invalid-grant");
+        fs::create_dir_all(root.join("credentials")).unwrap();
+        let path = credentials_path(&root);
+        fs::write(&path, "{}").unwrap();
+        let set_mtime = |seconds: u64| {
+            OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds))
+                .unwrap();
+        };
+        set_mtime(1_000);
+
+        let mut rejected = None;
+        let error = guarded_refresh(&root, &mut rejected, |_| {
+            Err(refresh_response_error(
+                reqwest::StatusCode::BAD_REQUEST,
+                r#"{"error":"invalid_grant"}"#,
+            ))
+        })
+        .unwrap_err();
+        assert!(is_invalid_grant(&error));
+        assert!(rejected.is_some());
+
+        // Unchanged credential file: fail fast, no refresh attempt.
+        let error = guarded_refresh(&root, &mut rejected, |_| {
+            panic!("refresh must not run while the credential file is unchanged")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("kimi login"));
+
+        // A re-login rewrites the file; the guard re-arms and success clears it.
+        set_mtime(2_000);
+        let token = guarded_refresh(&root, &mut rejected, |_| Ok("fresh".to_string())).unwrap();
+        assert_eq!(token, "fresh");
+        assert!(rejected.is_none());
+    }
+
+    #[test]
+    fn transient_refresh_failure_does_not_arm_the_guard() {
+        let root = temporary_dir("transient");
+        fs::create_dir_all(root.join("credentials")).unwrap();
+        fs::write(credentials_path(&root), "{}").unwrap();
+
+        let mut rejected = None;
+        let _ = guarded_refresh(&root, &mut rejected, |_| {
+            Err(anyhow!("operation timed out"))
+        })
+        .unwrap_err();
+        assert!(rejected.is_none());
+
+        // Next cycle still attempts the refresh.
+        let token = guarded_refresh(&root, &mut rejected, |_| Ok("token".to_string())).unwrap();
+        assert_eq!(token, "token");
     }
 
     #[test]
