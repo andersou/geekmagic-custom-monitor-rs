@@ -68,7 +68,8 @@ fn icon() -> &'static RgbaImage {
     &ICON
 }
 
-/// Fill in pace data for windows the API left blank.
+/// Fill in pace data for windows the API leaves blank.
+#[cfg(not(windows))]
 fn ensure_pace(window: &mut UsageWindow, window_minutes: f64) {
     if window.pace.is_some() {
         return;
