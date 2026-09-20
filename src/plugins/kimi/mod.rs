@@ -33,7 +33,8 @@ fn icon() -> &'static RgbaImage {
     &ICON
 }
 
-const USAGES_URL: &str = "https://api.kimi.com/coding/v1/usages";
+const DEFAULT_BASE_URL: &str = "https://api.kimi.com/coding/v1";
+const DEFAULT_CREDENTIAL_SLOT: &str = "kimi-code";
 const OAUTH_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const MAX_REQUEST_RETRIES: u32 = 2;
 const WEEK_MINUTES: f64 = 7.0 * 24.0 * 60.0;
@@ -126,8 +127,45 @@ impl QuotaDetail {
 }
 
 struct OAuthHosts {
-    primary: &'static str,
+    primary: String,
     alternate: Option<&'static str>,
+}
+
+/// The CLI scopes its login per environment: the default mainland-China one
+/// keeps the `kimi-code` slot and the `.com` hosts, any other (the global `.ai`
+/// region) gets a `kimi-code-env-<hash>` slot. Its `config.toml` records the
+/// slot and hosts of the current login; `None` means the default.
+#[derive(Debug, Default, PartialEq)]
+struct CliLogin {
+    slot: Option<String>,
+    base_url: Option<String>,
+    oauth_host: Option<String>,
+}
+
+fn cli_login(home: &Path) -> CliLogin {
+    let config = fs::read_to_string(home.join("config.toml"))
+        .ok()
+        .and_then(|raw| toml::from_str::<toml::Table>(&raw).ok());
+    let provider = config
+        .as_ref()
+        .and_then(|config| config.get("providers")?.get("managed:kimi-code"));
+    let oauth = provider.and_then(|provider| provider.get("oauth"));
+    let text = |value: Option<&toml::Value>| {
+        value
+            .and_then(toml::Value::as_str)
+            .map(|text| text.trim().trim_end_matches('/'))
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    CliLogin {
+        // The slot names a file this plugin rewrites on refresh: same
+        // bare-filename rule the CLI enforces.
+        slot: text(oauth.and_then(|oauth| oauth.get("key")))
+            .and_then(|key| key.strip_prefix("oauth/").map(str::to_string))
+            .filter(|slot| !slot.starts_with('.') && !slot.contains(['/', '\\'])),
+        base_url: text(provider.and_then(|provider| provider.get("base_url"))),
+        oauth_host: text(oauth.and_then(|oauth| oauth.get("oauth_host"))),
+    }
 }
 
 #[derive(Debug)]
@@ -170,18 +208,27 @@ fn kimi_home() -> Option<PathBuf> {
         })
 }
 
+/// The host the login persisted wins, as in the CLI: the install-channel
+/// `region` marker only says where the installer came from, not where the
+/// user signed in.
 fn oauth_hosts(home: &Path) -> OAuthHosts {
+    if let Some(primary) = cli_login(home).oauth_host {
+        return OAuthHosts {
+            primary,
+            alternate: None,
+        };
+    }
     match fs::read_to_string(home.join("region")) {
         Ok(region) if region.trim() == "mainland-cn" => OAuthHosts {
-            primary: "https://auth.kimi.com",
+            primary: "https://auth.kimi.com".to_string(),
             alternate: Some("https://auth.kimi.ai"),
         },
         Ok(_) => OAuthHosts {
-            primary: "https://auth.kimi.ai",
+            primary: "https://auth.kimi.ai".to_string(),
             alternate: Some("https://auth.kimi.com"),
         },
         Err(_) => OAuthHosts {
-            primary: "https://auth.kimi.com",
+            primary: "https://auth.kimi.com".to_string(),
             alternate: None,
         },
     }
@@ -197,7 +244,7 @@ fn cli_credentials(home: &Path) -> Option<CliCredentials> {
         expires_at: Option<i64>,
     }
 
-    let raw = fs::read_to_string(home.join("credentials/kimi-code.json")).ok()?;
+    let raw = fs::read_to_string(credentials_path(home)).ok()?;
     let credentials: RawCredentials = serde_json::from_str(&raw).ok()?;
     let access_token = credentials.access_token?.trim().to_string();
     if access_token.is_empty() {
@@ -217,7 +264,9 @@ fn cli_credentials(home: &Path) -> Option<CliCredentials> {
 }
 
 fn credentials_path(home: &Path) -> PathBuf {
-    home.join("credentials/kimi-code.json")
+    let slot = cli_login(home).slot;
+    let slot = slot.as_deref().unwrap_or(DEFAULT_CREDENTIAL_SLOT);
+    home.join("credentials").join(format!("{slot}.json"))
 }
 
 fn post_refresh(
@@ -448,7 +497,7 @@ fn refresh_cli_token(home: &Path) -> Result<String> {
         .build()
         .context("failed to build Kimi credential refresh HTTP client")?;
     let hosts = oauth_hosts(home);
-    let (mut status, mut body) = post_refresh(&client, hosts.primary, &refresh_token)?;
+    let (mut status, mut body) = post_refresh(&client, &hosts.primary, &refresh_token)?;
     if !status.is_success()
         && body.contains("invalid_grant")
         && let Some(alternate) = hosts.alternate
@@ -571,7 +620,10 @@ fn decode_usages(body: &str) -> std::result::Result<UsagesResponse, FetchError> 
     })
 }
 
-pub fn fetch_usages(token: &str) -> std::result::Result<UsagesResponse, FetchError> {
+pub fn fetch_usages(
+    base_url: &str,
+    token: &str,
+) -> std::result::Result<UsagesResponse, FetchError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -579,11 +631,11 @@ pub fn fetch_usages(token: &str) -> std::result::Result<UsagesResponse, FetchErr
             FetchError::Other(anyhow!(error).context("failed to build HTTP client"))
         })?;
     let response = client
-        .get(USAGES_URL)
+        .get(format!("{base_url}/usages"))
         .bearer_auth(token)
         .send()
         .map_err(|error| {
-            FetchError::Other(anyhow!(error).context("failed to reach api.kimi.com"))
+            FetchError::Other(anyhow!(error).context(format!("failed to reach {base_url}")))
         })?;
     let status = response.status();
     let body = response.text().map_err(|error| {
@@ -728,7 +780,16 @@ impl UiPlugin for Kimi {
                 token = refresh(home)?;
             }
         }
-        let usages = fetch_with_refresh(token, cli_home.as_deref(), fetch_usages, refresh)?;
+        let base_url = cli_home
+            .as_deref()
+            .and_then(|home| cli_login(home).base_url)
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let usages = fetch_with_refresh(
+            token,
+            cli_home.as_deref(),
+            |token| fetch_usages(&base_url, token),
+            refresh,
+        )?;
         let now = Utc::now();
         self.windows = windows(&usages, now)?;
         // The payload carries no "generated at", so the header shows when this
@@ -946,6 +1007,54 @@ mod tests {
         let hosts = oauth_hosts(&root);
         assert_eq!(hosts.primary, "https://auth.kimi.com");
         assert_eq!(hosts.alternate, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scoped_cli_login_follows_config_toml() {
+        let root = temporary_dir("scoped-login");
+        assert_eq!(cli_login(&root), CliLogin::default());
+        assert_eq!(
+            credentials_path(&root),
+            root.join("credentials/kimi-code.json")
+        );
+
+        fs::write(
+            root.join("config.toml"),
+            r#"
+[providers."managed:kimi-code"]
+base_url = "https://api.kimi.ai/coding/v1/"
+
+[providers."managed:kimi-code".oauth]
+key = "oauth/kimi-code-env-0e4f99c69cc27850"
+oauth_host = "https://auth.kimi.ai"
+"#,
+        )
+        .unwrap();
+        // The install marker must not outrank the persisted login.
+        fs::write(root.join("region"), "mainland-cn\n").unwrap();
+
+        assert_eq!(
+            credentials_path(&root),
+            root.join("credentials/kimi-code-env-0e4f99c69cc27850.json")
+        );
+        assert_eq!(
+            cli_login(&root).base_url.as_deref(),
+            Some("https://api.kimi.ai/coding/v1")
+        );
+        let hosts = oauth_hosts(&root);
+        assert_eq!(hosts.primary, "https://auth.kimi.ai");
+        assert_eq!(hosts.alternate, None);
+
+        fs::write(
+            root.join("config.toml"),
+            "[providers.\"managed:kimi-code\".oauth]\nkey = \"oauth/../escape\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            credentials_path(&root),
+            root.join("credentials/kimi-code.json")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
